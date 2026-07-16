@@ -1,0 +1,42 @@
+# Python environments and generated files
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+
+# Local databases and backups
+*.db
+*.sqlite
+*.sqlite3
+*.mdb
+*.accdb
+*.bak
+
+# Generated documents, exports, and logs
+*.log
+*.pdf
+*.docx
+*.xlsx
+*.xls
+*.csv
+findstr.txt
+
+# Editor and OS metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,28 @@
+ Volume in drive C is OS
+ Volume Serial Number is D40E-DE3D
+
+ Directory of C:\Dell Inspirion\TenantCRM\SQL\TEST
+
+04/24/2026  03:31 PM             2,315 lease_documents_schema.sql
+04/24/2026  03:35 PM    <DIR>          ..
+04/24/2026  03:37 PM             7,999 lease_documents_schema_with_changelog.sql
+04/24/2026  11:11 PM             7,715 lease_templates_admin_v3_settings_schema_with_changelog.sql
+04/25/2026  08:41 AM             5,235 lease_package_builder_v1_schema_with_changelog.sql
+04/25/2026  12:29 PM             1,182 lease_generated_documents.sql
+04/25/2026  01:14 PM             4,485 lease_document_schema_v2_6_2.sql
+04/25/2026  01:19 PM             1,533 lease_document_pieces_tokenization.sql
+04/25/2026  01:23 PM             5,992 lease_document_schema_v2_6_3_fixed.sql
+04/26/2026  09:47 AM               908 LucidPM_Task1_SQL.sql
+04/26/2026  10:21 AM             7,879 LucidPM_Task2_Three_New_Schema_Tables.sql
+04/26/2026  12:35 PM               468 LucidPM_Task3_LeaseTemplateSections_IsActive.sql
+04/27/2026  05:40 PM             8,390 schema_lease_sections_rename.sql
+04/27/2026  07:41 PM               552 lease_section_schema_cleanup_v2_8_6.sql
+04/30/2026  12:52 PM             1,495 phase5_clause_library_columns.sql
+05/01/2026  08:08 AM             1,798 phase5_sprint2_nullable_source_document.sql
+05/04/2026  06:53 PM               174 Production
+05/04/2026  06:53 PM             1,606 Production SQL Upgrade.txt
+05/04/2026  06:59 PM               230 Prod
+05/04/2026  07:00 PM    <DIR>          .
+05/04/2026  07:00 PM                 0 Prod sql update 2.0.txt
+              19 File(s)         59,956 bytes
+               2 Dir(s)  608,653,537,280 bytes free

@@ -1,0 +1,49 @@
+ Volume in drive C is OS
+ Volume Serial Number is D40E-DE3D
+
+ Directory of C:\Dell Inspirion\TenantCRM\LucidPM_Reflex\LucidPM_Reflex
+
+04/19/2026  08:53 PM    <DIR>          .
+04/19/2026  05:31 PM    <DIR>          ..
+04/19/2026  08:53 PM                 0 Claude.txt
+04/19/2026  08:46 PM    <DIR>          Components
+04/19/2026  08:44 PM               445 LucidPM_Reflex.py
+04/19/2026  05:44 PM            25,389 LucidPM_Reflex_1.py
+04/19/2026  05:56 PM            21,554 LucidPM_Reflex_2.py
+04/19/2026  08:14 PM            21,581 LucidPM_Reflex_3.py
+04/19/2026  08:27 PM            35,850 LucidPM_Reflex_4.py
+04/19/2026  05:30 PM               934 LucidPM_Reflex_Install.py
+04/19/2026  08:47 PM    <DIR>          Pages
+04/19/2026  08:43 PM             2,120 state.py
+04/19/2026  05:30 PM                 0 __init__.py
+04/19/2026  08:48 PM    <DIR>          __pycache__
+               9 File(s)        107,873 bytes
+
+ Directory of C:\Dell Inspirion\TenantCRM\LucidPM_Reflex\LucidPM_Reflex\Components
+
+04/19/2026  08:46 PM    <DIR>          .
+04/19/2026  08:53 PM    <DIR>          ..
+04/19/2026  08:44 PM             5,631 sidebar.py
+04/19/2026  08:46 PM                 0 __init__.py
+               2 File(s)          5,631 bytes
+
+ Directory of C:\Dell Inspirion\TenantCRM\LucidPM_Reflex\LucidPM_Reflex\Pages
+
+04/19/2026  08:47 PM    <DIR>          .
+04/19/2026  08:53 PM    <DIR>          ..
+04/19/2026  08:47 PM             1,606 dashboard.py
+04/19/2026  08:47 PM            38,726 tenants.py
+04/19/2026  08:46 PM                 0 __init__.py
+               3 File(s)         40,332 bytes
+
+ Directory of C:\Dell Inspirion\TenantCRM\LucidPM_Reflex\LucidPM_Reflex\__pycache__
+
+04/19/2026  08:48 PM    <DIR>          .
+04/19/2026  08:53 PM    <DIR>          ..
+04/19/2026  08:48 PM               780 LucidPM_Reflex.cpython-314.pyc
+04/19/2026  05:31 PM               168 __init__.cpython-314.pyc
+               2 File(s)            948 bytes
+
+     Total Files Listed:
+              16 File(s)        154,784 bytes
+              11 Dir(s)  634,822,025,216 bytes free
