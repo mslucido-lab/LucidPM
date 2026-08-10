@@ -260,9 +260,6 @@ def generate_proforma_pdf(
     story.append(tbl)
     story.append(Spacer(1, 8))
     story.append(Paragraph(
-        "Tax basis: Owner Occupied suites at $0. "
-        "Bank basis: uses suite Underwriting Rent. "
-        "Vacant suites show recommended rent (last known +5%). "
         "Green cells indicate rent change vs prior month.",
         styles["Normal"]
     ))

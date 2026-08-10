@@ -25,6 +25,7 @@ v6.6 — Applies LeaseStart/RentDueDay proration rules and gives new leases star
 import reflex as rx
 import datetime
 from typing import Optional
+from urllib.parse import quote
 
 from LucidPM_Reflex.state import AppState, run_query, BRAND_DARK, BRAND_PRIMARY
 from LucidPM_Reflex.components.sidebar import page_shell
@@ -69,6 +70,8 @@ class ProformaState(AppState):
     property_ids: list[int] = []
     year_options: list[str] = []   # stored as strings for rx.select compatibility
     selected_year_str: str = ""    # display binding for the select
+    cap_rate: float = 6.0
+    cap_rate_str: str = "6.0"   # display binding for the input — avoids snapping mid-keystroke
 
     # Table
     suite_headers: list[str] = []   # suite labels + "Totals"
@@ -81,6 +84,14 @@ class ProformaState(AppState):
         return (
             f"http://localhost:8000/api/proforma-pdf"
             f"?year={self.proforma_year}&property={prop}&basis={self.basis}&db={self.db}"
+        )
+
+    @rx.var
+    def bank_package_url(self) -> str:
+        prop = quote(self.selected_property) if self.selected_property else "All"
+        return (
+            f"http://localhost:8000/api/bank-package-pdf"
+            f"?year={self.proforma_year}&property={prop}&db={self.db}&cap_rate={self.cap_rate}"
         )
 
     def on_load(self):
@@ -112,6 +123,13 @@ class ProformaState(AppState):
 
     def set_basis(self, v: str):
         self.basis = v
+
+    def set_cap_rate(self, v: str):
+        self.cap_rate_str = v
+        try:
+            self.cap_rate = float(v)
+        except (TypeError, ValueError):
+            pass
 
     def run_proforma(self):
         self.compute_proforma()
@@ -653,6 +671,16 @@ def proforma_content() -> rx.Component:
                     ),
                     rx.fragment(),
                 ),
+                rx.cond(
+                    ProformaState.rows.length() > 0,
+                    rx.link(
+                        rx.button("⬇ Download Bank Package", variant="outline",
+                                  color_scheme="green", size="2"),
+                        href=ProformaState.bank_package_url,
+                        is_external=True,
+                    ),
+                    rx.fragment(),
+                ),
                 align="center", width="100%",
             ),
 
@@ -689,6 +717,17 @@ def proforma_content() -> rx.Component:
                         value=ProformaState.basis,
                         on_change=ProformaState.set_basis,
                         size="2",
+                    ),
+                    spacing="1",
+                ),
+                rx.vstack(
+                    rx.text("Cap Rate %", size="1", color="#666"),
+                    rx.input(
+                        value=ProformaState.cap_rate_str,
+                        on_change=ProformaState.set_cap_rate,
+                        type="number",
+                        size="2",
+                        width="80px",
                     ),
                     spacing="1",
                 ),

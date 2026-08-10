@@ -1,0 +1,781 @@
+Azure Hosting Handoff for LucidPM and Portfolio Manager
+
+Goal
+
+Prepare both applications to run in Microsoft Azure using the same Azure subscription while keeping the applications, databases, configuration, and data separate.
+
+Primary goals:
+
+Keep Azure cost at or near $0.
+
+Preserve the existing application architectures as much as possible.
+
+Avoid unnecessary database rewrites.
+
+Allow both applications to run under separate subdomains of an existing domain.
+
+Keep local development working while cloud deployment is built and tested.
+
+Do not make destructive changes to the current local production environments.
+
+Target Azure Architecture
+
+Azure Subscription
+
+One shared Azure subscription.
+
+Resource Group
+
+Use one shared resource group unless there is a strong technical reason not to.
+
+Suggested name:
+
+Lucido-Apps-RG
+
+Container Apps Environment
+
+Use one shared Azure Container Apps Environment.
+
+Deploy two separate Container Apps:
+
+LucidPM
+
+Portfolio Manager
+
+Each app must have:
+
+Its own container configuration.
+
+Its own environment variables.
+
+Its own secrets.
+
+Its own database connection strings.
+
+Its own custom domain.
+
+Its own authentication configuration if enabled.
+
+Domains
+
+Use separate subdomains.
+
+Example:
+
+lucidpm.example.com
+
+portfolio.example.com
+
+Do not assume control of the root domain is required.
+
+Azure Container Apps should handle HTTPS using Azure managed certificates.
+
+Database Architecture
+
+Use Azure SQL Database.
+
+Do not convert either application to PostgreSQL.
+
+Use one Azure SQL logical server if practical.
+
+Create separate databases:
+
+TenantCRM
+
+TenantCRM_Test
+
+PortfolioManager
+
+PortfolioManager_Test
+
+Each application must continue to treat production and test databases separately.
+
+Azure SQL Free Tier Goal
+
+Configure databases to use the Azure SQL free offer where eligible.
+
+The current Azure offer provides a free allowance per qualifying database.
+
+Configure databases so they pause or stop consuming paid resources when the free allowance is exhausted rather than automatically generating unexpected charges, if Azure still offers that option during setup.
+
+Container Apps Free Tier Goal
+
+Both apps will share the Azure Container Apps free allowance at the subscription level.
+
+Configure both apps to scale to zero when idle.
+
+These are low-usage applications, so the target is to stay within the shared free compute allowance.
+
+Avoid provisioning always-on infrastructure unless required.
+
+Do not provision Azure Container Registry automatically.
+
+Azure Container Registry is not free.
+
+Prefer a deployment/image approach that avoids adding a paid registry unless there is a clear need.
+
+LucidPM Current Architecture
+
+LucidPM is currently:
+
+Python
+
+Reflex
+
+SQL Server Express
+
+pyodbc
+
+ReportLab
+
+pypdf
+
+Local desktop-style deployment through run.bat
+
+Current databases:
+
+TenantCRM
+
+TenantCRM_Test
+
+Current local frontend:
+
+localhost:3000
+
+Current backend:
+
+localhost:8000
+
+LucidPM contains:
+
+Tenant CRM
+
+Lease management
+
+Rent schedules
+
+Property financials
+
+Analytics
+
+Waiting list
+
+Work items
+
+Vendor management
+
+Property and suite management
+
+Lease document generation
+
+PDF generation
+
+Lease source documents
+
+Generated lease packages
+
+LucidPM Cloud Changes Required
+
+Containerize the Reflex application.
+
+Preserve the existing Reflex architecture.
+
+Do not rewrite the application into Flask, FastAPI, React, or another framework.
+
+Configure Reflex correctly for production hosting.
+
+Make sure the frontend can reach the backend correctly when hosted.
+
+Reflex currently uses separate frontend and backend behavior locally. Account for this when designing the container and ingress configuration.
+
+Replace local SQL Server connection information with environment-based Azure SQL connection configuration.
+
+Keep pyodbc unless there is a concrete reason to change it.
+
+The Linux container will likely need Microsoft ODBC Driver for SQL Server installed.
+
+Remove production dependence on local Windows paths.
+
+Do not assume files can remain permanently on the Container Apps filesystem.
+
+LucidPM Persistent File Storage
+
+LucidPM currently uses local files for items such as:
+
+Lease source PDFs.
+
+Generated lease PDFs.
+
+Document uploads.
+
+Potential attachments.
+
+Container Apps local storage is not permanent.
+
+Move permanent document storage to Azure Blob Storage.
+
+Suggested organization:
+
+Storage Account
+
+Blob container: lucidpm-documents
+
+Possible folders or prefixes:
+
+source-documents/
+
+generated-leases/
+
+attachments/
+
+exports/
+
+Temporary PDF generation can occur inside the container.
+
+Permanent files must be uploaded to Blob Storage.
+
+Database records that currently store local file paths will eventually need to store cloud-compatible identifiers, blob names, or URLs.
+
+Do not make schema changes casually.
+
+Review the existing document schema before changing file path behavior.
+
+LucidPM Local Development
+
+Local development must continue to work.
+
+Preferred design:
+
+Local environment:
+
+SQL Server Express
+
+Local files
+
+TenantCRM / TenantCRM_Test
+
+Azure environment:
+
+Azure SQL
+
+Azure Blob Storage
+
+Environment variables or configuration should determine which infrastructure is used.
+
+Do not hardcode Azure configuration into application logic.
+
+Portfolio Manager Current Architecture
+
+Portfolio Manager is currently:
+
+Python
+
+Flask
+
+Flask Blueprints
+
+Vanilla JavaScript
+
+SQL Server Express
+
+ReportLab
+
+Anthropic API integration
+
+CSV import
+
+REST API endpoints
+
+No frontend build server
+
+No WebSocket requirement currently identified
+
+No Redis requirement
+
+No Celery requirement
+
+No scheduled background worker currently required
+
+Portfolio Manager Cloud Changes Required
+
+Containerize the Flask application.
+
+Use a production WSGI server such as Gunicorn.
+
+Do not use the Flask development server in production.
+
+Listen on 0.0.0.0 using the port supplied by the Azure/container environment.
+
+Replace local SQL Server connection information with environment-based Azure SQL connection configuration.
+
+Keep pyodbc unless there is a strong reason to replace it.
+
+Install Microsoft ODBC Driver for SQL Server in the Linux container.
+
+Remove local startup behaviors such as:
+
+webbrowser.open()
+
+run.bat dependencies
+
+Windows-only assumptions
+
+Keep business logic and existing Flask Blueprint structure intact.
+
+Portfolio Manager Database Architecture
+
+Portfolio Manager should use:
+
+PortfolioManager Azure SQL Database
+
+PortfolioManager_Test Azure SQL Database
+
+Do not convert to PostgreSQL.
+
+Critical Cross-Database Change
+
+Portfolio Manager currently queries the LucidPM database directly using SQL Server cross-database syntax similar to:
+
+LucidTenant.dbo.Properties
+
+LucidTenant.dbo.PropertyFinancials
+
+LucidTenant.dbo.PropertySuites
+
+This works locally because both databases live on the same SQL Server Express instance.
+
+Do not preserve this architecture in Azure SQL Database.
+
+Replace the cross-database SQL dependency with two explicit database connections.
+
+Portfolio Manager should have something conceptually similar to:
+
+PORTFOLIO_DB_CONNECTION
+
+LUCIDPM_DB_CONNECTION
+
+When Portfolio Manager needs property information:
+
+Connect to the LucidPM Azure SQL database.
+
+Run the required LucidPM property query there.
+
+Return the data to Python.
+
+Write or process the required values in Portfolio Manager.
+
+Do not attempt a three-part database query across Azure SQL databases unless specifically validated and justified.
+
+This is the most important application-level architectural change for Portfolio Manager.
+
+Portfolio Manager Persistent Files
+
+Portfolio Manager currently generates ReportLab PDFs primarily for download.
+
+Temporary generated PDFs do not require persistent storage.
+
+CSV uploads also do not necessarily require permanent storage.
+
+Do not provision Azure Files unless an actual filesystem requirement is found.
+
+If permanent PDF, CSV, export, or document retention is added, use Azure Blob Storage.
+
+Suggested Blob container:
+
+portfolio-documents
+
+Anthropic API Key and Secrets
+
+Do not hardcode API keys.
+
+Do not keep production secrets in source code.
+
+Prefer:
+
+Azure Container Apps secrets
+
+or
+
+Azure Key Vault if justified
+
+Portfolio Manager currently stores or has stored Anthropic configuration in SQL.
+
+Review this behavior.
+
+Production Anthropic credentials should be moved into secure runtime configuration.
+
+Authentication and Security
+
+Both applications will become internet-accessible.
+
+Do not expose them publicly without evaluating authentication.
+
+These applications contain sensitive business and financial information.
+
+Portfolio Manager may contain particularly sensitive financial and personal information.
+
+Consider Azure Container Apps built-in authentication using Microsoft Entra ID.
+
+Prefer infrastructure-level authentication if it avoids unnecessary custom authentication code.
+
+Do not implement a new authentication system without first evaluating Azure's built-in option.
+
+Deployment Separation
+
+Although both apps may share Azure infrastructure, they must remain independently deployable.
+
+LucidPM deployment must not restart or replace Portfolio Manager.
+
+Portfolio Manager deployment must not restart or replace LucidPM.
+
+Each app should have:
+
+Independent container image.
+
+Independent revision history.
+
+Independent environment variables.
+
+Independent ingress.
+
+Independent health status.
+
+Independent custom domain.
+
+Independent secrets.
+
+Independent database credentials where practical.
+
+Shared Resources Allowed
+
+The applications may share:
+
+Azure subscription.
+
+Resource group.
+
+Container Apps Environment.
+
+Azure SQL logical server.
+
+Storage Account.
+
+Possibly deployment infrastructure.
+
+They must not share application databases.
+
+If Blob Storage uses one shared Storage Account, use separate containers or clear prefixes for each application.
+
+Example:
+
+lucidpm-documents
+
+portfolio-documents
+
+Test and Production Separation
+
+Preserve test and production behavior.
+
+LucidPM currently has a database toggle between TenantCRM and TenantCRM_Test.
+
+Do not break this behavior during initial migration.
+
+Portfolio Manager should similarly maintain clear test and production configuration.
+
+Production deployments should default safely to production configuration.
+
+Development and test environments should never accidentally write to production because of a missing environment variable.
+
+Cost Constraints
+
+This project has a strong cost constraint.
+
+Target Azure infrastructure cost:
+
+$0 if possible.
+
+Near $0 if unavoidable.
+
+Use:
+
+Azure SQL free database offer.
+
+Azure Container Apps scale-to-zero.
+
+Azure managed TLS certificates.
+
+Existing domain.
+
+Minimal Blob Storage.
+
+Avoid:
+
+Azure SQL Managed Instance.
+
+Always-on virtual machines.
+
+Premium Container Apps configuration.
+
+Paid Container Registry unless necessary.
+
+Azure Files unless actually required.
+
+Unnecessary private networking during the initial deployment.
+
+Over-engineered enterprise architecture.
+
+Deployment Strategy
+
+Do not move both apps to Azure simultaneously.
+
+Recommended sequence:
+
+Phase 1
+
+Create Azure resources.
+
+Create the shared resource group.
+
+Create Azure SQL logical server.
+
+Create Azure SQL databases.
+
+Do not change local production apps yet.
+
+Phase 2
+
+Migrate a copy of LucidPM TenantCRM into Azure SQL.
+
+Connect to it using SSMS.
+
+Validate schema, data, constraints, identity columns, and queries.
+
+Phase 3
+
+Point a separate local LucidPM configuration at Azure SQL.
+
+Run LucidPM locally against the Azure database.
+
+Validate major application workflows.
+
+Do not replace the local production database yet.
+
+Phase 4
+
+Containerize LucidPM.
+
+Deploy it to Azure Container Apps.
+
+Test using the temporary azurecontainerapps.io hostname.
+
+Do not change the custom domain yet.
+
+Phase 5
+
+Implement Blob Storage for LucidPM documents.
+
+Verify lease source PDFs and generated lease PDFs survive container restarts.
+
+Phase 6
+
+Add authentication if required.
+
+Add LucidPM custom subdomain.
+
+Enable Azure managed HTTPS certificate.
+
+Phase 7
+
+Migrate Portfolio Manager database to Azure SQL.
+
+Validate it independently.
+
+Phase 8
+
+Replace Portfolio Manager cross-database SQL queries with a second explicit connection to the LucidPM Azure SQL database.
+
+Test the property synchronization workflow.
+
+Phase 9
+
+Containerize Portfolio Manager.
+
+Deploy it as a second Azure Container App.
+
+Test through the Azure temporary hostname.
+
+Phase 10
+
+Secure Portfolio Manager.
+
+Add its custom subdomain.
+
+Enable Azure managed HTTPS certificate.
+
+Phase 11
+
+Only after both cloud applications are proven stable should any local production dependency be retired.
+
+Codex Tasks
+
+Before modifying code, inspect each repository and report:
+
+Current application entry point.
+
+Current startup command.
+
+Python version.
+
+Dependency management files.
+
+Current database connection implementation.
+
+All references to SQL Server instance names.
+
+All references to TenantCRM.
+
+All references to TenantCRM_Test.
+
+All cross-database queries.
+
+All hardcoded localhost URLs.
+
+All hardcoded Windows paths.
+
+All file read/write operations.
+
+All use of temporary files.
+
+All persistent file assumptions.
+
+All environment variables currently used.
+
+All secrets currently stored in code or SQL.
+
+All background threads or processes.
+
+All startup browser-launch code.
+
+All scheduled jobs.
+
+All WebSocket usage.
+
+All ports used.
+
+Then produce a deployment gap analysis for each application.
+
+Do not begin major refactoring until the gap analysis is reviewed.
+
+Important Rules
+
+Do not convert databases to PostgreSQL.
+
+Do not replace Reflex.
+
+Do not replace Flask.
+
+Do not redesign application functionality.
+
+Do not alter database schemas unless necessary and explicitly reviewed.
+
+Do not remove local development support.
+
+Do not overwrite local production configuration.
+
+Do not move permanent data into container-local storage.
+
+Do not introduce paid Azure services without identifying the cost first.
+
+Do not combine the two applications into one container.
+
+Do not combine their databases.
+
+Do not change Portfolio Manager's LucidPM integration until the current cross-database implementation has been fully identified.
+
+Do not expose either application publicly without reviewing authentication and secrets.
+
+Success Criteria
+
+LucidPM runs as an independent Azure Container App.
+
+Portfolio Manager runs as an independent Azure Container App.
+
+Both can scale to zero.
+
+LucidPM uses Azure SQL.
+
+Portfolio Manager uses Azure SQL.
+
+Portfolio Manager can read required LucidPM property information through a separate LucidPM database connection.
+
+LucidPM permanent documents use Blob Storage.
+
+Both applications work under separate HTTPS subdomains.
+
+Both retain local development capability.
+
+Test and production databases remain separate.
+
+Deploying one application does not affect the other.
+
+The architecture stays within Azure free allowances or as close to $0 as reasonably possible.
+
+The existing application architectures and business logic remain intact.
+
+Addendum: Architect Analysis and POC Plan (2026-08-07)
+
+This section was added after reviewing this handoff against the actual LucidPM_Reflex repository. It corrects assumptions in the original document and lays out a scoped proof-of-concept sequence to run before committing to the full phased migration above.
+
+Gap Analysis Findings (LucidPM, grounded in current code)
+
+The Prod/Test database toggle is not environment-variable driven. It is a runtime UI toggle in application state: AppState.use_test_db in state.py, defaulting to Test, with server and database names hardcoded (localhost\SQLEXPRESS, TenantCRM, TenantCRM_Test in state.py lines 11-13). No os.getenv usage exists anywhere in the codebase. The original handoff's assumption of an env-var-driven split does not match reality. This needs a real design decision: cloud builds should select the connection at deploy time via environment variable, with the in-app toggle removed or gated for cloud builds, not just repointed underneath.
+
+The current database connection uses Trusted_Connection=yes (Windows integrated authentication), built in state.py get_conn() (lines 26-35). Azure SQL Database does not support Windows integrated authentication. This is a hard blocker not identified in the original handoff. The connection logic needs a SQL-authentication (or Entra ID authentication) branch added before any Azure SQL connectivity can be tested, not just a server-name swap.
+
+Lease document storage root is itself stored as admin-configurable state in SQL (AppSettings row LeaseDocumentStorageRoot, seeded in pages/lease_documents.py lines 883-886, editable via pages/admin_settings.py), defaulting to a hardcoded local path in pages/lease_documents_pdf.py line 72. Moving to Blob Storage is therefore not just a code change but a data migration of every stored StoredFilePath/RelativePath row, plus a decision about what happens to the existing admin screen that currently lets someone repoint production storage to an arbitrary local path.
+
+The /api/pick-files endpoint in LucidPM_Reflex.py (lines 39-76) shells out to PowerShell to open a native Windows OpenFileDialog, hardcoded to a local Generated folder path. This has no Linux equivalent and no fallback. It will break outright in a Linux container and must be replaced with a browser-native file input before containerization, not discovered after.
+
+The Fernet encryption key used to protect SMTP and AI/API-key configuration is generated and stored in the same AppSettings SQL table as the ciphertext it protects (pages/settings.py lines 35-57, key name LocalEncryptionKey). Key and ciphertext living in the same database defeats the purpose of encrypting at rest. The key should move to Container Apps secrets or Key Vault independent of Azure timing.
+
+No rxconfig.py, run.bat, requirements.txt, or pyproject.toml exists anywhere in the tracked repository. Local Python is 3.14.4 per .venv/pyvenv.cfg, but nothing is actually installed in that venv, so the dependency set can only be reconstructed from source imports (reflex, pyodbc, fastapi, reportlab, pypdf, cryptography). This scaffolding must be created before any Dockerfile can be written.
+
+The tracked repository contains hundreds of versioned duplicate files (_1, _2, _v3_0_18 suffixes) alongside the live unsuffixed modules. Any automated inventory pass (the "Codex Tasks" section above) should be scoped to the live files first or it will drown real findings in noise from dead copies.
+
+No references to Portfolio Manager or cross-database LucidTenant.dbo. queries exist in this repository. That integration lives entirely in the separate Portfolio Manager codebase and was not available to review here.
+
+Additional Deployment Gap: Container Registry Default
+
+az containerapp up, the simplest CLI path to deploy a Container App, provisions an Azure Container Registry by default. ACR is not free, and the original handoff explicitly says to avoid provisioning it automatically. The POC and later phases should build and push images to a free registry instead (GitHub Container Registry or Docker Hub free tier) and point Container Apps at that registry explicitly, rather than using the default az containerapp up flow unmodified.
+
+Recommended Phase 0 (before any Azure resource is touched)
+
+Add requirements.txt or pyproject.toml and rxconfig.py to the repository.
+
+Replace the native PowerShell file-picker endpoint with a browser file input.
+
+Add a SQL-authentication branch to the database connection logic and make the connection target (server, database, auth mode) environment-variable driven, with the existing runtime Prod/Test toggle reviewed and gated for cloud builds.
+
+Move the Fernet encryption key out of the AppSettings table and into secret storage.
+
+None of these require any Azure resource to exist and should happen regardless of migration timing.
+
+Scoped POC Plan (LucidPM only, Portfolio Manager excluded entirely)
+
+The goal of the POC is to de-risk the two unknowns that would sink the full migration if they failed, before investing further: whether the app actually works against Azure SQL, and whether it can be containerized and deployed within the free tier without a paid registry.
+
+POC-A: Create the Azure subscription (user action, portal, requires payment/identity details). Install Azure CLI locally. Run az login. Create the shared resource group Lucido-Apps-RG. No cost.
+
+POC-B: Create one Azure SQL logical server and a single free-tier scratch database (not yet TenantCRM_Test). Confirm the free offer actually applies to this subscription before any further investment, since the free database offer is limited per subscription and eligibility has changed over time.
+
+POC-C: Implement the Phase 0 connection changes (env-driven target, SQL-auth branch). Point the local app at the Azure SQL scratch database using a copy of schema and sample data. Validate core workflows locally against the cloud database. No container, no deployment yet.
+
+POC-D: Write a Dockerfile that installs the Microsoft ODBC Driver for SQL Server and resolves the Reflex frontend (port 3000) / backend (port 8000) split into one deployable image. Build and push to a free registry (GitHub Container Registry or Docker Hub), not ACR. Deploy to the temporary *.azurecontainerapps.io hostname only. Validate scale-to-zero and cold-start behavior.
+
+POC-E: Create one Blob Storage container and validate that a single lease PDF round-trips (upload, restart the container, download) successfully.
+
+POC complete when: the SQL free tier is confirmed at effectively $0, the app runs correctly against Azure SQL, the app runs in a container on Azure without a paid registry, and one file survives a container restart in Blob Storage. Only after this should the full production phasing earlier in this document (custom domain, authentication, Portfolio Manager migration, cross-database refactor) be picked back up.
+
+Status as of 2026-08-07
+
+Azure CLI installed locally (v2.89.0) via winget. No Azure subscription created yet — this is the next step and requires the user to complete signup in the portal (portal.azure.com, Subscriptions, Add) since it involves payment and identity details. Once a subscription exists, resume at POC-A: az login, verify the subscription, then create Lucido-Apps-RG.

@@ -6,8 +6,10 @@ Patch v34.2: adds native attachment file picker endpoint and preserves Communica
 """
 
 import datetime
+import io
 import os
 import reflex as rx
+from pypdf import PdfReader, PdfWriter
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import Response, JSONResponse
 
@@ -35,6 +37,22 @@ from LucidPM_Reflex.state import run_query, TEST_DB_NAME
 # ── FastAPI app for custom endpoints ─────────────────────────────────────────
 
 api = FastAPI()
+
+
+def _standalone_state(state_cls):
+    """Build a state instance (with a real parent chain) outside a live Reflex session.
+
+    Needed for endpoints that reuse a page State's computation methods for PDF
+    generation. Reflex requires the full parent chain to exist so that vars
+    inherited from a base state (e.g. AppState.use_test_db) and computed vars
+    resolve correctly.
+    """
+    root = state_cls.get_root_state()(_reflex_internal_init=True)
+    node = root
+    for part in state_cls.get_full_name().split(".")[1:]:
+        node = node.substates[part]
+    return node
+
 
 @api.get("/api/pick-files")
 async def pick_files():
@@ -75,19 +93,7 @@ if ($result -eq 'OK') {
     except Exception as ex:
         return JSONResponse({"paths": [], "error": str(ex)})
 
-@api.get("/api/rent-roll-pdf")
-async def rent_roll_pdf_endpoint(request: Request):
-    params      = request.query_params
-    as_of_str   = params.get("as_of", "")
-    prop_filter = params.get("property", "All")
-    basis       = params.get("basis", "Tax")
-    db          = params.get("db", TEST_DB_NAME)
-
-    try:
-        as_of = datetime.datetime.strptime(as_of_str, "%Y-%m-%d").date()
-    except (ValueError, TypeError):
-        as_of = datetime.date.today()
-
+def _build_rent_roll_pdf_bytes(as_of: datetime.date, prop_filter: str, basis: str, db: str) -> bytes:
     fixed_term_types = {"fixed term", "option term", "multi-year", "multi year"}
 
     suite_sql = (
@@ -250,12 +256,30 @@ async def rent_roll_pdf_endpoint(request: Request):
             tax_acct = str(prop_detail_rows[0].get("TaxAccountNumber") or "").strip()
 
     prop_label = prop_filter if prop_filter != "All" else "All Properties"
-    pdf_bytes = generate_rent_roll_pdf(
+    return generate_rent_roll_pdf(
         rows=rows, as_of_date=as_of, property_name=prop_label, basis=basis,
         property_address=prop_address, tax_account_number=tax_acct,
         total_rentable_sqft=total_rentable, total_occupied_sqft=total_occupied,
         vacancy_rate_pct=vac_pct, avg_annual_psf=avg_psf,
     )
+
+
+@api.get("/api/rent-roll-pdf")
+async def rent_roll_pdf_endpoint(request: Request):
+    params      = request.query_params
+    as_of_str   = params.get("as_of", "")
+    prop_filter = params.get("property", "All")
+    basis       = params.get("basis", "Tax")
+    db          = params.get("db", TEST_DB_NAME)
+
+    try:
+        as_of = datetime.datetime.strptime(as_of_str, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        as_of = datetime.date.today()
+
+    pdf_bytes = _build_rent_roll_pdf_bytes(as_of, prop_filter, basis, db)
+
+    prop_label = prop_filter if prop_filter != "All" else "All Properties"
     filename = f"rent_roll_{as_of.strftime('%Y%m%d')}_{prop_label.replace(' ', '_')}.pdf"
     return Response(
         content=pdf_bytes, media_type="application/pdf",
@@ -263,23 +287,10 @@ async def rent_roll_pdf_endpoint(request: Request):
     )
 
 
-@api.get("/api/proforma-pdf")
-async def proforma_pdf_endpoint(request: Request):
-    """Generate proforma PDF. Params: year, property, basis, db"""
-    params       = request.query_params
-    year_str     = params.get("year", str(datetime.date.today().year))
-    prop_filter  = params.get("property", "All")
-    basis        = params.get("basis", "Tax")
-    db           = params.get("db", TEST_DB_NAME)
-
-    try:
-        year = int(year_str)
-    except (ValueError, TypeError):
-        year = datetime.date.today().year
-
+def _build_proforma_pdf_bytes(prop_filter: str, year: int, basis: str, db: str) -> bytes | None:
     # Re-run computation server-side using same logic as ProformaState._do_compute
     from LucidPM_Reflex.pages.proforma import ProformaState
-    state = ProformaState()
+    state = _standalone_state(ProformaState)
     state.use_test_db = (db == TEST_DB_NAME)
     state.proforma_year = year
     state.basis = basis
@@ -290,7 +301,12 @@ async def proforma_pdf_endpoint(request: Request):
     prop_ids   = [int(r["PropertyID"]) for r in prop_rows]
     state.property_names = prop_names
     state.property_ids   = prop_ids
-    state.selected_property = prop_filter if prop_filter in prop_names else (prop_names[0] if prop_names else "")
+    if prop_filter == "All":
+        state.selected_property = prop_names[0] if prop_names else ""
+    elif prop_filter in prop_names:
+        state.selected_property = prop_filter
+    else:
+        return None
 
     state._do_compute()
 
@@ -319,7 +335,7 @@ async def proforma_pdf_endpoint(request: Request):
                       for c in row.cells]
         rows_for_pdf.append({"month": row.month, "cells": cells_data})
 
-    pdf_bytes = generate_proforma_pdf(
+    return generate_proforma_pdf(
         rows=rows_for_pdf,
         suite_headers=state.suite_headers,
         property_name=prop_filter if prop_filter != "All" else "All Properties",
@@ -329,6 +345,25 @@ async def proforma_pdf_endpoint(request: Request):
         tax_account_number=tax_acct,
     )
 
+
+@api.get("/api/proforma-pdf")
+async def proforma_pdf_endpoint(request: Request):
+    """Generate proforma PDF. Params: year, property, basis, db"""
+    params       = request.query_params
+    year_str     = params.get("year", str(datetime.date.today().year))
+    prop_filter  = params.get("property", "All")
+    basis        = params.get("basis", "Tax")
+    db           = params.get("db", TEST_DB_NAME)
+
+    try:
+        year = int(year_str)
+    except (ValueError, TypeError):
+        year = datetime.date.today().year
+
+    pdf_bytes = _build_proforma_pdf_bytes(prop_filter, year, basis, db)
+    if pdf_bytes is None:
+        return Response(content=b"Property not found", status_code=404)
+
     filename = f"proforma_{prop_filter.replace(' ', '_')}_{year}.pdf"
     return Response(
         content=pdf_bytes, media_type="application/pdf",
@@ -336,26 +371,15 @@ async def proforma_pdf_endpoint(request: Request):
     )
 
 
-@api.get("/api/property-financials-pdf")
-async def property_financials_pdf_endpoint(request: Request):
-    """Generate property financials PDF. Params: property, mode, cap_rate, year, db"""
-    params      = request.query_params
-    prop_filter = params.get("property", "")
-    mode        = params.get("mode", "Single Year")
-    db          = params.get("db", TEST_DB_NAME)
-    year_str    = params.get("year", str(datetime.date.today().year))
-    cap_rate    = float(params.get("cap_rate", "6.0"))
-
-    try:
-        fiscal_year = int(year_str)
-    except (ValueError, TypeError):
-        fiscal_year = datetime.date.today().year
-
+def _build_property_financials_pdf_bytes(
+    prop_filter: str, mode: str, cap_rate: float, fiscal_year: int, db: str
+) -> bytes | None:
+    """Return the property financials PDF, or None when the property is unknown."""
     # Get property ID
     prop_rows = run_query("SELECT PropertyID, PropertyName FROM Properties WHERE PropertyName=?",
                           (prop_filter,), db=db)
     if not prop_rows:
-        return Response(content=b"Property not found", status_code=404)
+        return None
     prop_id = int(prop_rows[0]["PropertyID"])
 
     # Get total rentable sq ft
@@ -398,6 +422,7 @@ async def property_financials_pdf_endpoint(request: Request):
         rev  = float(r.get("TotalRevenue") or 0)
         opx  = float(r.get("TotalOperatingExpenses") or 0)
         noi  = rev - opx
+        noi_margin = (noi / rev * 100.0) if rev > 0 else 0.0
         est  = (noi / (cap_rate / 100.0)) if cap_rate > 0 and noi > 0 else 0.0
         psf  = (est / total_sqft) if total_sqft > 0 and est > 0 else 0.0
         if rev != 0 or opx != 0:
@@ -406,11 +431,12 @@ async def property_financials_pdf_endpoint(request: Request):
                 "total_revenue_raw": rev,
                 "total_opex_raw": opx,
                 "noi_raw": noi,
+                "noi_margin": noi_margin,
                 "est_value_raw": est,
                 "psf_raw": psf,
             })
 
-    pdf_bytes = generate_property_financials_pdf(
+    return generate_property_financials_pdf(
         property_name=prop_filter,
         report_mode=mode,
         cap_rate=cap_rate,
@@ -424,9 +450,90 @@ async def property_financials_pdf_endpoint(request: Request):
         tax_account_number=tax_acct,
     )
 
+
+@api.get("/api/property-financials-pdf")
+async def property_financials_pdf_endpoint(request: Request):
+    """Generate property financials PDF. Params: property, mode, cap_rate, year, db"""
+    params      = request.query_params
+    prop_filter = params.get("property", "")
+    mode        = params.get("mode", "Single Year")
+    db          = params.get("db", TEST_DB_NAME)
+    year_str    = params.get("year", str(datetime.date.today().year))
+    cap_rate    = float(params.get("cap_rate", "6.0"))
+
+    try:
+        fiscal_year = int(year_str)
+    except (ValueError, TypeError):
+        fiscal_year = datetime.date.today().year
+
+    pdf_bytes = _build_property_financials_pdf_bytes(prop_filter, mode, cap_rate, fiscal_year, db)
+    if pdf_bytes is None:
+        return Response(content=b"Property not found", status_code=404)
+
     filename = f"property_financials_{prop_filter.replace(' ', '_')}_{fiscal_year}.pdf"
     return Response(
         content=pdf_bytes, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _previously_ended_quarter_label(as_of: datetime.date) -> str:
+    current_quarter = ((as_of.month - 1) // 3) + 1
+    if current_quarter == 1:
+        return f"Q4 {as_of.year - 1}"
+    return f"Q{current_quarter - 1} {as_of.year}"
+
+
+@api.get("/api/bank-package-pdf")
+async def bank_package_pdf_endpoint(request: Request):
+    """Merge Bank Rent Roll + Bank Proforma + Financials Trend into one PDF."""
+    params      = request.query_params
+    prop_filter = params.get("property", "")
+    year_str    = params.get("year", str(datetime.date.today().year))
+    db          = params.get("db", TEST_DB_NAME)
+
+    try:
+        cap_rate = float(params.get("cap_rate", "6.0"))
+    except (ValueError, TypeError):
+        cap_rate = 6.0
+
+    if not prop_filter or prop_filter == "All":
+        return Response(
+            content=b'Select a specific property for the Bank Package (not "All Properties").',
+            status_code=400,
+        )
+
+    try:
+        year = int(year_str)
+    except (ValueError, TypeError):
+        year = datetime.date.today().year
+
+    today = datetime.date.today()
+    rent_roll_bytes = _build_rent_roll_pdf_bytes(today, prop_filter, "Bank", db)
+    proforma_bytes = _build_proforma_pdf_bytes(prop_filter, year, "Bank", db)
+    if proforma_bytes is None:
+        return Response(content=b"Property not found", status_code=404)
+    financials_bytes = _build_property_financials_pdf_bytes(
+        prop_filter, "Trend", cap_rate, year, db
+    )
+    if financials_bytes is None:
+        return Response(content=b"Property not found", status_code=404)
+
+    writer = PdfWriter()
+    for section_bytes in (rent_roll_bytes, proforma_bytes, financials_bytes):
+        reader = PdfReader(io.BytesIO(section_bytes))
+        for page in reader.pages:
+            writer.add_page(page)
+
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    buffer.seek(0)
+    merged_bytes = buffer.read()
+
+    quarter_label = _previously_ended_quarter_label(today)
+    filename = f"{prop_filter.replace(' ', '_')}-{quarter_label}-Property_Performance_Package.pdf"
+    return Response(
+        content=merged_bytes, media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

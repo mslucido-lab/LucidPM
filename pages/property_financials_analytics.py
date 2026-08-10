@@ -29,6 +29,7 @@ class PropertyFinancialsAnalyticsState(AppState):
     active_tab: str = "summary"
     compare_period: str = ""
     compare_metric: str = "all"
+    margin_view: str = "margin_pct"   # "margin_pct" | "income_split"
 
     financials_data: list[dict] = []
     property_sqft: dict = {}
@@ -44,6 +45,9 @@ class PropertyFinancialsAnalyticsState(AppState):
 
     def set_compare_period(self, v: str):
         self.compare_period = v
+
+    def set_margin_view(self, v: str):
+        self.margin_view = v
 
     def on_load(self):
         rows = run_query(
@@ -228,6 +232,22 @@ class PropertyFinancialsAnalyticsState(AppState):
                 "margin": margin,
                 "fill": fill,
                 "stroke": stroke,
+            })
+        return result
+
+    @rx.var
+    def income_split_chart_data(self) -> list[dict]:
+        """Opex % and NOI % of revenue by year — stacks to 100%."""
+        result = []
+        for row in self.chart_data:
+            rev = float(row.get("revenue", 0))
+            opex = float(row.get("opex", 0))
+            opex_pct = round((opex / rev * 100.0), 1) if rev > 0 else 0.0
+            noi_pct = round(100.0 - opex_pct, 1) if rev > 0 else 0.0
+            result.append({
+                "year": row["year"],
+                "opex_pct": opex_pct,
+                "noi_pct": noi_pct,
             })
         return result
 
@@ -552,6 +572,62 @@ def margins_chart() -> rx.Component:
     )
 
 
+def margin_view_toggle_button(label: str, view_id: str) -> rx.Component:
+    return rx.button(
+        label,
+        on_click=PropertyFinancialsAnalyticsState.set_margin_view(view_id),
+        variant=rx.cond(
+            PropertyFinancialsAnalyticsState.margin_view == view_id,
+            "solid",
+            "outline",
+        ),
+        color_scheme="blue",
+        size="1",
+    )
+
+
+def income_split_chart() -> rx.Component:
+    return chart_container(
+        rx.recharts.bar_chart(
+            rx.recharts.bar(
+                data_key="opex_pct",
+                name="Opex % of Revenue",
+                fill=CHART_OPEX_FILL,
+                stroke=CHART_OPEX_STROKE,
+                stroke_width=1.0,
+                stack_id="1",
+            ),
+            rx.recharts.bar(
+                data_key="noi_pct",
+                name="NOI % of Revenue",
+                fill="rgba(42, 163, 122, 0.35)",
+                stroke=COMPARE_WALNUT_FILL,
+                stroke_width=1.0,
+                stack_id="1",
+            ),
+            rx.recharts.x_axis(data_key="year"),
+            rx.recharts.y_axis(
+                domain=["dataMin - 5", "dataMax + 5"],
+                unit="%",
+            ),
+            rx.recharts.cartesian_grid(stroke_dasharray="3 3", vertical=False),
+            rx.recharts.graphing_tooltip(),
+            rx.recharts.legend(),
+            rx.recharts.reference_line(
+                y=60,
+                stroke="#1F4E79",
+                stroke_dasharray="4 2",
+                stroke_width=2.0,
+                label="60%",
+            ),
+            data=PropertyFinancialsAnalyticsState.income_split_chart_data,
+            width="100%",
+            height=320,
+            margin={"top": 10, "right": 30, "left": 10, "bottom": 0},
+        )
+    )
+
+
 def valuation_chart() -> rx.Component:
     return chart_container(
         rx.recharts.composed_chart(
@@ -788,7 +864,21 @@ def page_property_financials_analytics():
                         trend_chart(),
                         rx.cond(
                             PropertyFinancialsAnalyticsState.active_tab == "margins",
-                            margins_chart(),
+                            rx.vstack(
+                                rx.hstack(
+                                    margin_view_toggle_button("Margin %", "margin_pct"),
+                                    margin_view_toggle_button("Income Split", "income_split"),
+                                    spacing="2",
+                                ),
+                                rx.cond(
+                                    PropertyFinancialsAnalyticsState.margin_view == "margin_pct",
+                                    margins_chart(),
+                                    income_split_chart(),
+                                ),
+                                spacing="3",
+                                width="100%",
+                                align_items="start",
+                            ),
                             rx.cond(
                                 PropertyFinancialsAnalyticsState.active_tab == "valuation",
                                 valuation_chart(),

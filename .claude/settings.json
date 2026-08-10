@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(powershell -c \"Get-Content 'Undelivered Handoffs/LucidoPM_ChatGPT_Handoff_44_IncomeSplitChartFixes.md' -TotalCount 40\")",
+      "Bash(powershell -c \"Get-Content 'Undelivered Handoffs/LucidoPM_ChatGPT_Handoff_44_IncomeSplitChartFixes.md' | Select-Object -Skip 40 -First 60\")"
+    ]
+  }
+}
