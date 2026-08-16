@@ -94,7 +94,7 @@ Add a comment directly above `_standalone_state()` flagging the dependency so it
     here.
 ```
 
-Separately: this repo currently has **no `requirements.txt` or `pyproject.toml` at all**, so there is nothing pinning the installed Reflex version today — any `pip install -U reflex` (or a fresh environment setup) can silently change this behavior. That gap is already tracked as Phase 0 work in `Undelivered Handoffs/Azure Planning`. Fixing it is out of scope for this handoff, but it directly reduces the risk this issue describes — worth prioritizing.
+Update (2026-08-16): this gap is now partially closed — `requirements.txt` exists and pins `reflex==0.8.9` exactly (see its header comment for why that specific version), so an unpinned `pip install -U reflex` is no longer the failure mode it was when this was written. The underlying risk described above (undocumented internals breaking on *any* future Reflex upgrade, including a deliberate one) still applies.
 
 ---
 
@@ -119,7 +119,9 @@ Separately: this repo currently has **no `requirements.txt` or `pyproject.toml` 
 
 ## How to Deliver This
 
-Per `CLAUDE.md`: edit `LucidPM_Reflex.py` in place, no new versioned file, no versioned-file archive step needed here (this file isn't part of the `_vN.py` duplicate cleanup — it's the current live entry point with no historical siblings).
+Per `CLAUDE.md`: edit `LucidPM/LucidPM.py` in place, no new versioned file, no versioned-file archive step needed here (this file isn't part of the `_vN.py` duplicate cleanup — it's the current live entry point with no historical siblings).
+
+Note: as of the 2026-08-16 foundation session, the entry point moved and was renamed — it used to be `LucidPM_Reflex.py` at the repo root, it's now `LucidPM/LucidPM.py` (the app package itself was renamed from `LucidPM_Reflex` to `LucidPM`). The `_standalone_state()` function this handoff targets is unaffected by that move, just its file path.
 
 1. Apply the change to `_standalone_state()` directly.
 2. Verify against the checklist above.
@@ -130,8 +132,8 @@ Per `CLAUDE.md`: edit `LucidPM_Reflex.py` in place, no new versioned file, no ve
 ## File Locations
 
 ```
-C:\Dell Inspirion\TenantCRM\LucidPM_Reflex - ChatGPT\LucidPM_Reflex\
-  LucidPM_Reflex.py     ← only file changing (one function)
+C:\Inspirion\Dev\TenantCRM\LucidPM\LucidPM\
+  LucidPM.py     ← only file changing (one function)
 
 Frontend: http://localhost:3000
 Backend:  http://localhost:8000
