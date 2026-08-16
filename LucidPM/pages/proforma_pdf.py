@@ -16,7 +16,7 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 )
 
-BASE_DIR = r"C:\Dell Inspirion\TenantCRM\LucidPM_Reflex\LucidPM_Reflex"
+BASE_DIR = r"C:\Dell Inspirion\TenantCRM\LucidPM\LucidPM"
 
 MONTH_NAMES = [
     "January", "February", "March", "April", "May", "June",

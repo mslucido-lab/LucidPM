@@ -19,8 +19,8 @@ from typing import Optional
 
 import reflex as rx
 
-from LucidPM_Reflex.state import AppState, run_query, BRAND_PRIMARY, BRAND_DARK
-from LucidPM_Reflex.components.sidebar import page_shell
+from LucidPM.state import AppState, run_query, BRAND_PRIMARY, BRAND_DARK
+from LucidPM.components.sidebar import page_shell
 
 
 # Page width — matches vendors.py / properties.py pattern

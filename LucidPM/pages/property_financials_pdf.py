@@ -16,7 +16,7 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 )
 
-BASE_DIR = r"C:\Dell Inspirion\TenantCRM\LucidPM_Reflex\LucidPM_Reflex"
+BASE_DIR = r"C:\Dell Inspirion\TenantCRM\LucidPM\LucidPM"
 
 
 def _logo_path(filename: str) -> Optional[str]:

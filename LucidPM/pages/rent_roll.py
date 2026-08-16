@@ -16,11 +16,11 @@ Lease matching logic ported from Streamlit page_rent_roll():
 import reflex as rx
 import datetime
 
-from LucidPM_Reflex.state import (
+from LucidPM.state import (
     AppState, run_query,
     BRAND_PRIMARY, BRAND_DARK,
 )
-from LucidPM_Reflex.components.sidebar import page_shell
+from LucidPM.components.sidebar import page_shell
 
 # Dynamic page width. Updated by sidebar resizer via CSS variable.
 FULL_PAGE_WIDTH = "calc(100vw - var(--lucid-sidebar-width, 220px) - 64px)"

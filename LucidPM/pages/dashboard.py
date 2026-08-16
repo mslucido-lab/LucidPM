@@ -10,8 +10,8 @@ Controls:
 import reflex as rx
 import datetime
 
-from LucidPM_Reflex.components.sidebar import page_shell
-from LucidPM_Reflex.state import AppState, run_query, BRAND_DARK, BRAND_PRIMARY
+from LucidPM.components.sidebar import page_shell
+from LucidPM.state import AppState, run_query, BRAND_DARK, BRAND_PRIMARY
 
 
 # Dynamic full-page width. Sidebar script maintains --lucid-sidebar-width as the sidebar is resized.

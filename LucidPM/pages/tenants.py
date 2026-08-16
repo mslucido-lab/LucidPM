@@ -71,11 +71,11 @@ import datetime
 import os
 import re
 
-from LucidPM_Reflex.state import (
+from LucidPM.state import (
     AppState, run_query, run_exec, fmt_date,
     BRAND_PRIMARY, BRAND_DARK, METHOD_CHOICES, TEST_DB_NAME,
 )
-from LucidPM_Reflex.components.sidebar import page_shell
+from LucidPM.components.sidebar import page_shell
 
 
 DEFAULT_ATTACHMENT_FOLDER = r"C:\Dell Inspirion\TenantCRM\LeaseDocuments\Generated"
@@ -2731,7 +2731,7 @@ class TenantState(AppState):
 
     def send_compose_email(self):
         """Validate, send, and log to Communications."""
-        from LucidPM_Reflex.state import send_email
+        from LucidPM.state import send_email
         import tempfile, os
 
         if self.compose_sending:

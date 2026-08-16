@@ -14,8 +14,8 @@ import reflex as rx
 import datetime
 from typing import Optional
 
-from LucidPM_Reflex.state import AppState, run_query, run_exec, BRAND_DARK, BRAND_PRIMARY
-from LucidPM_Reflex.components.sidebar import page_shell
+from LucidPM.state import AppState, run_query, run_exec, BRAND_DARK, BRAND_PRIMARY
+from LucidPM.components.sidebar import page_shell
 
 
 # Dynamic full-page width. Updated by sidebar.py via --lucid-sidebar-width.

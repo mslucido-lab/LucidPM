@@ -3,7 +3,7 @@ Shared sidebar navigation component.
 """
 
 import reflex as rx
-from LucidPM_Reflex.state import AppState, BRAND_PRIMARY, BRAND_DARK
+from LucidPM.state import AppState, BRAND_PRIMARY, BRAND_DARK
 
 
 SIDEBAR_DEFAULT_WIDTH = 220      # px — default expanded width

@@ -18,13 +18,13 @@ v1.2.3
 
 import reflex as rx
 
-from LucidPM_Reflex.state import (
+from LucidPM.state import (
     AppState,
     run_query,
     run_exec,
     BRAND_DARK,
 )
-from LucidPM_Reflex.components.sidebar import page_shell
+from LucidPM.components.sidebar import page_shell
 
 
 # Page width constant — dynamic sidebar width + page_shell padding (32px each side = 64px)

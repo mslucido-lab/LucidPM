@@ -378,19 +378,19 @@ class AppState(rx.State):
         self.use_test_db = not self.use_test_db
         self.db_version += 1
         # Yield reload events for all page states that need refreshing
-        from LucidPM_Reflex.pages.dashboard import DashboardState
-        from LucidPM_Reflex.pages.rent_roll import RentRollState
-        from LucidPM_Reflex.pages.property_financials import PropertyFinancialsState
-        from LucidPM_Reflex.pages.property_financials_analytics import PropertyFinancialsAnalyticsState
-        from LucidPM_Reflex.pages.proforma import ProformaState
-        from LucidPM_Reflex.pages.waiting_list import WaitingListState
-        from LucidPM_Reflex.pages.communications import CommunicationsState
-        from LucidPM_Reflex.pages.tenants import TenantState
-        from LucidPM_Reflex.pages.work_items import WorkItemState
-        from LucidPM_Reflex.pages.leases_expiring import LeasesExpiringState
-        from LucidPM_Reflex.pages.lease_documents import LeaseDocumentState
-        from LucidPM_Reflex.pages.lease_package_builder import LeasePackageBuilderState
-        from LucidPM_Reflex.pages.admin_settings import AdminSettingsState
+        from LucidPM.pages.dashboard import DashboardState
+        from LucidPM.pages.rent_roll import RentRollState
+        from LucidPM.pages.property_financials import PropertyFinancialsState
+        from LucidPM.pages.property_financials_analytics import PropertyFinancialsAnalyticsState
+        from LucidPM.pages.proforma import ProformaState
+        from LucidPM.pages.waiting_list import WaitingListState
+        from LucidPM.pages.communications import CommunicationsState
+        from LucidPM.pages.tenants import TenantState
+        from LucidPM.pages.work_items import WorkItemState
+        from LucidPM.pages.leases_expiring import LeasesExpiringState
+        from LucidPM.pages.lease_documents import LeaseDocumentState
+        from LucidPM.pages.lease_package_builder import LeasePackageBuilderState
+        from LucidPM.pages.admin_settings import AdminSettingsState
         yield AdminSettingsState.reload_on_db_change
         yield LeaseDocumentState.reload_on_db_change
         yield LeasePackageBuilderState.reload_on_db_change

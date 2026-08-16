@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import reflex as rx
 
-from LucidPM_Reflex.state import AppState, run_query, run_exec, BRAND_DARK, encrypt_value, decrypt_value, send_email
-from LucidPM_Reflex.components.sidebar import page_shell
-from LucidPM_Reflex.pages.lease_documents_pdf import DEFAULT_DOCUMENT_ROOT
+from LucidPM.state import AppState, run_query, run_exec, BRAND_DARK, encrypt_value, decrypt_value, send_email
+from LucidPM.components.sidebar import page_shell
+from LucidPM.pages.lease_documents_pdf import DEFAULT_DOCUMENT_ROOT
 
 
 # Page width constant — dynamic sidebar width + page_shell padding (32px each side = 64px)

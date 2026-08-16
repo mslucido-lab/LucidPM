@@ -9,11 +9,11 @@ v7 — Adds outbound vendor email compose modal using shared send_email().
 
 import reflex as rx
 
-from LucidPM_Reflex.state import (
+from LucidPM.state import (
     AppState, run_query, run_exec,
     BRAND_PRIMARY, BRAND_DARK,
 )
-from LucidPM_Reflex.components.sidebar import page_shell
+from LucidPM.components.sidebar import page_shell
 
 
 # Page width constant — dynamic sidebar width + page_shell padding (32px each side = 64px)
@@ -252,7 +252,7 @@ class VendorState(AppState):
 
     def send_compose_email(self):
         """Validate and send. No comm log entry for vendor emails."""
-        from LucidPM_Reflex.state import send_email
+        from LucidPM.state import send_email
 
         self.compose_error = ""
         self.compose_success = ""

@@ -13,26 +13,26 @@ from pypdf import PdfReader, PdfWriter
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import Response, JSONResponse
 
-from LucidPM_Reflex.pages.dashboard import dashboard_page, DashboardState
-from LucidPM_Reflex.pages.tenants import tenants_page, TenantState
-from LucidPM_Reflex.pages.rent_roll import rent_roll_page, RentRollState
-from LucidPM_Reflex.pages.property_financials import property_financials_page, PropertyFinancialsState
-from LucidPM_Reflex.pages.property_financials_analytics import page_property_financials_analytics, PropertyFinancialsAnalyticsState
-from LucidPM_Reflex.pages.proforma import proforma_page, ProformaState
-from LucidPM_Reflex.pages.waiting_list import waiting_list_page, WaitingListState
-from LucidPM_Reflex.pages.lease_package_builder import lease_package_builder_page, LeasePackageBuilderState 
-from LucidPM_Reflex.pages.properties import properties_page, PropertyState
-from LucidPM_Reflex.pages.vendors import vendors_page, VendorState
-from LucidPM_Reflex.pages.suites import suites_page, SuiteState
-from LucidPM_Reflex.pages.lease_documents import lease_documents_page, LeaseDocumentState
-from LucidPM_Reflex.pages.admin_settings import admin_settings_page, AdminSettingsState
-from LucidPM_Reflex.pages.work_items import work_items_page, WorkItemState
-from LucidPM_Reflex.pages.leases_expiring import leases_expiring_page, LeasesExpiringState
-from LucidPM_Reflex.pages.rent_roll_pdf import generate_rent_roll_pdf
-from LucidPM_Reflex.pages.proforma_pdf import generate_proforma_pdf
-from LucidPM_Reflex.pages.property_financials_pdf import generate_property_financials_pdf
-from LucidPM_Reflex.pages.communications import communications_page, CommunicationsState
-from LucidPM_Reflex.state import run_query, TEST_DB_NAME
+from LucidPM.pages.dashboard import dashboard_page, DashboardState
+from LucidPM.pages.tenants import tenants_page, TenantState
+from LucidPM.pages.rent_roll import rent_roll_page, RentRollState
+from LucidPM.pages.property_financials import property_financials_page, PropertyFinancialsState
+from LucidPM.pages.property_financials_analytics import page_property_financials_analytics, PropertyFinancialsAnalyticsState
+from LucidPM.pages.proforma import proforma_page, ProformaState
+from LucidPM.pages.waiting_list import waiting_list_page, WaitingListState
+from LucidPM.pages.lease_package_builder import lease_package_builder_page, LeasePackageBuilderState 
+from LucidPM.pages.properties import properties_page, PropertyState
+from LucidPM.pages.vendors import vendors_page, VendorState
+from LucidPM.pages.suites import suites_page, SuiteState
+from LucidPM.pages.lease_documents import lease_documents_page, LeaseDocumentState
+from LucidPM.pages.admin_settings import admin_settings_page, AdminSettingsState
+from LucidPM.pages.work_items import work_items_page, WorkItemState
+from LucidPM.pages.leases_expiring import leases_expiring_page, LeasesExpiringState
+from LucidPM.pages.rent_roll_pdf import generate_rent_roll_pdf
+from LucidPM.pages.proforma_pdf import generate_proforma_pdf
+from LucidPM.pages.property_financials_pdf import generate_property_financials_pdf
+from LucidPM.pages.communications import communications_page, CommunicationsState
+from LucidPM.state import run_query, TEST_DB_NAME
 
 # ── FastAPI app for custom endpoints ─────────────────────────────────────────
 
@@ -289,7 +289,7 @@ async def rent_roll_pdf_endpoint(request: Request):
 
 def _build_proforma_pdf_bytes(prop_filter: str, year: int, basis: str, db: str) -> bytes | None:
     # Re-run computation server-side using same logic as ProformaState._do_compute
-    from LucidPM_Reflex.pages.proforma import ProformaState
+    from LucidPM.pages.proforma import ProformaState
     state = _standalone_state(ProformaState)
     state.use_test_db = (db == TEST_DB_NAME)
     state.proforma_year = year
@@ -648,7 +648,7 @@ async def leases_expiring_pdf_endpoint(request: Request):
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import inch
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
-    from LucidPM_Reflex.pages.leases_expiring import (
+    from LucidPM.pages.leases_expiring import (
         _build_events, _to_date, _rent_as_of, _rent_on_date,
         _recommended_rent, _has_successor, _fmt_currency,
     )
@@ -870,7 +870,7 @@ def application_report_pdf(request: Request, background_tasks: BackgroundTasks):
     import os as _os
     import tempfile
     from fastapi.responses import JSONResponse
-    from LucidPM_Reflex.pages.tenants import (
+    from LucidPM.pages.tenants import (
         _parse_notes_dict, NOTES_FIELD_MAP,
         _build_application_report_pdf,
     )

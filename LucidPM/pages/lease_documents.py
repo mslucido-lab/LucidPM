@@ -229,10 +229,10 @@ from typing import Optional
 
 import reflex as rx
 
-from LucidPM_Reflex.state import AppState, run_query, run_exec, BRAND_DARK, BRAND_PRIMARY
-from LucidPM_Reflex.components.sidebar import page_shell
-from LucidPM_Reflex.lease_merge import extract_tokens
-from LucidPM_Reflex.pages.lease_documents_pdf import (
+from LucidPM.state import AppState, run_query, run_exec, BRAND_DARK, BRAND_PRIMARY
+from LucidPM.components.sidebar import page_shell
+from LucidPM.lease_merge import extract_tokens
+from LucidPM.pages.lease_documents_pdf import (
     DEFAULT_DOCUMENT_ROOT,
     copy_existing_pdf,
     page_count,

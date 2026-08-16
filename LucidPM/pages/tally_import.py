@@ -17,7 +17,7 @@ import io
 import datetime
 from typing import Optional
 
-from LucidPM_Reflex.state import run_query, run_exec, get_conn, TEST_DB_NAME
+from LucidPM.state import run_query, run_exec, get_conn, TEST_DB_NAME
 
 
 # ── Encryption ────────────────────────────────────────────────────────────────

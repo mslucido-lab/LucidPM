@@ -14,8 +14,8 @@ v7 — Full-page dynamic width tracks the resizable sidebar.
 import reflex as rx
 import datetime
 
-from LucidPM_Reflex.state import AppState, run_query, run_exec, BRAND_DARK, BRAND_PRIMARY
-from LucidPM_Reflex.components.sidebar import page_shell
+from LucidPM.state import AppState, run_query, run_exec, BRAND_DARK, BRAND_PRIMARY
+from LucidPM.components.sidebar import page_shell
 
 
 # Dynamic full-page width. Sidebar script maintains --lucid-sidebar-width.
@@ -431,7 +431,7 @@ class WaitingListState(AppState):
 
         try:
             file_bytes = await file.read()
-            from LucidPM_Reflex.pages.tally_import import parse_tally_csv, preview_rows
+            from LucidPM.pages.tally_import import parse_tally_csv, preview_rows
             parsed = parse_tally_csv(file_bytes)
             if not parsed:
                 self.tally_error = "No rows found in CSV."
@@ -465,7 +465,7 @@ class WaitingListState(AppState):
             return
 
         try:
-            from LucidPM_Reflex.pages.tally_import import import_tally_row
+            from LucidPM.pages.tally_import import import_tally_row
             imported = 0
             skipped = 0
             failures = []

@@ -64,9 +64,9 @@ from xml.sax.saxutils import escape
 import reflex as rx
 
 
-from LucidPM_Reflex.state import AppState, run_query, run_exec, BRAND_DARK, BRAND_PRIMARY
-from LucidPM_Reflex.components.sidebar import page_shell
-from LucidPM_Reflex.pages.lease_documents_pdf import (
+from LucidPM.state import AppState, run_query, run_exec, BRAND_DARK, BRAND_PRIMARY
+from LucidPM.components.sidebar import page_shell
+from LucidPM.pages.lease_documents_pdf import (
     DEFAULT_DOCUMENT_ROOT,
     merge_pdf_files,
     normalize_storage_root,
@@ -75,7 +75,7 @@ from LucidPM_Reflex.pages.lease_documents_pdf import (
     render_text_to_pdf,
     render_text_sections_to_pdf,
 )
-from LucidPM_Reflex.lease_merge import (
+from LucidPM.lease_merge import (
     get_lease_merge_context,
     render_text_template,
     validate_template_tokens,

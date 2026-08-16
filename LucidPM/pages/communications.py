@@ -18,11 +18,11 @@ from typing import Optional
 
 import reflex as rx
 
-from LucidPM_Reflex.state import (
+from LucidPM.state import (
     AppState, run_query, run_exec, decrypt_value,
     BRAND_PRIMARY, BRAND_DARK, METHOD_CHOICES,
 )
-from LucidPM_Reflex.components.sidebar import page_shell
+from LucidPM.components.sidebar import page_shell
 
 
 DEFAULT_ATTACHMENT_FOLDER = r"C:\Dell Inspirion\TenantCRM\LeaseDocuments\Generated"
@@ -1201,7 +1201,7 @@ class CommunicationsState(AppState):
 
     def send_compose_email(self):
         """Send reply and log to comm log when a tenant is selected."""
-        from LucidPM_Reflex.state import send_email
+        from LucidPM.state import send_email
         import tempfile, os
 
         if self.compose_sending:
@@ -1384,7 +1384,7 @@ class CommunicationsState(AppState):
 
     def send_compose_new(self):
         """Send new email from Communications and log to comm log."""
-        from LucidPM_Reflex.state import send_email
+        from LucidPM.state import send_email
         import tempfile, os
 
         if self.compose_sending:

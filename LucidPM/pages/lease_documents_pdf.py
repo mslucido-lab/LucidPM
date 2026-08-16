@@ -72,7 +72,7 @@ from reportlab.platypus import SimpleDocTemplate, Spacer, Preformatted, KeepToge
 DEFAULT_DOCUMENT_ROOT = r"C:\Dell Inspirion\TenantCRM\LeaseDocuments"
 
 try:
-    from LucidPM_Reflex.pages.lease_render_styles import (
+    from LucidPM.pages.lease_render_styles import (
         PAGE_SETUP,
         LEASE_STYLES,
         LEASE_MONOSPACE,

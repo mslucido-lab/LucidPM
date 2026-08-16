@@ -29,7 +29,7 @@ import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from LucidPM_Reflex.state import run_query, run_exec, TEST_DB_NAME
+from LucidPM.state import run_query, run_exec, TEST_DB_NAME
 
 TOKEN_PATTERN = re.compile(r"\{\{\s*([A-Za-z0-9_\.\-]+)\s*\}\}")
 
