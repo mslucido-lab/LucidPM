@@ -9,6 +9,7 @@ LucidPM/                      <- git repo root, also the Reflex project root
   .env.example
   assets/                     <- static files served by Reflex (currently empty)
   docs/                       <- this folder
+  db/                         <- schema baseline + history, see docs/Database.md
   CLAUDE.md                   <- working agreement + session log ("Where We Left Off")
   Claude.txt                  <- old directory listing kept for historical reference
   Undelivered Handoffs/       <- handoff docs not yet implemented/verified

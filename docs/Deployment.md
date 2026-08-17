@@ -15,7 +15,7 @@ As of the 2026-08-16 foundation session: Azure CLI is installed locally; no Azur
 The current app makes several assumptions that don't hold in a typical cloud host and will need to be addressed before deployment is realistic:
 
 - Windows trusted authentication to a local named SQL Server instance (`Trusted_Connection=yes` to `localhost\SQLEXPRESS`)
-- Local disk paths for document storage (`C:\Dell Inspirion\TenantCRM\LeaseDocuments\...`, hardcoded)
-- An interactive Windows file-picker endpoint (`/api/pick-files`)
+- Local disk paths for document storage (`C:\Dell Inspirion\TenantCRM\LeaseDocuments\...`) — as of Handoff 49 this no longer hard-fails when the path doesn't exist, but it's still not a real configurable storage location, which cloud hosting would need
+- An interactive Windows file-picker endpoint (`/api/pick-files`) — fundamentally incompatible with a headless cloud host regardless of path config, not something the Handoff 49 fix addresses
 
 None of these are addressed by this foundation session — see `Undelivered Handoffs/Azure Planning` for the plan to resolve them.

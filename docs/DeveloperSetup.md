@@ -37,7 +37,7 @@ At this point, expect the app to boot and the frontend to compile. Pages that hi
 
 ## 4. Document storage
 
-`LucidPM/pages/tenants.py` hardcodes a default attachment folder: `C:\Dell Inspirion\TenantCRM\LeaseDocuments\Generated`. On a new machine this path won't exist. Either create it, or (as a future improvement) make it configurable — currently it is not.
+The native file-picker endpoint (`/api/pick-files` in `LucidPM/LucidPM.py`) points at `C:\Dell Inspirion\TenantCRM\LeaseDocuments\Generated` by default — the old dev machine's path, which won't exist here. As of Handoff 49 this is guarded (`Test-Path` check before setting `InitialDirectory`), so it degrades to Windows' own default location instead of erroring; it doesn't point anywhere useful on this machine yet, though. (Note: `tenants.py` also defines a `DEFAULT_ATTACHMENT_FOLDER` constant with the same old path — that one is dead code, never actually referenced, not the source of this behavior.) Making the real storage location configurable, rather than guarded-but-still-hardcoded, remains a future improvement — not done.
 
 ## 5. Secrets
 
