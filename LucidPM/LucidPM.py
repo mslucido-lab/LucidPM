@@ -64,7 +64,10 @@ async def pick_files():
     ps_script = """
 Add-Type -AssemblyName System.Windows.Forms
 $dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.InitialDirectory = 'C:\\Dell Inspirion\\TenantCRM\\LeaseDocuments\\Generated'
+$defaultDir = 'C:\\Dell Inspirion\\TenantCRM\\LeaseDocuments\\Generated'
+if (Test-Path $defaultDir) {
+    $dialog.InitialDirectory = $defaultDir
+}
 $dialog.Filter = 'PDF Files (*.pdf)|*.pdf|All Files (*.*)|*.*'
 $dialog.Multiselect = $true
 $dialog.Title = 'Select files to attach'

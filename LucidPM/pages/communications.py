@@ -2414,7 +2414,9 @@ def attachment_picker_panel_comms() -> rx.Component:
                 id="email_attachment_upload_comms",
                 accept={"application/pdf": [".pdf"]},
                 max_files=5,
-                on_drop=CommunicationsState.handle_attachment_upload,
+                on_drop=CommunicationsState.handle_attachment_upload(
+                    rx.upload_files(upload_id="email_attachment_upload_comms")
+                ),
             ),
             rx.cond(
                 CommunicationsState.attach_filenames.length() > 0,
@@ -2609,7 +2611,9 @@ def comms_compose_new_modal() -> rx.Component:
                     id="comms_compose_new_upload",
                     accept={"application/pdf": [".pdf"]},
                     max_files=5,
-                    on_drop=CommunicationsState.handle_attachment_upload,
+                    on_drop=CommunicationsState.handle_attachment_upload(
+                        rx.upload_files(upload_id="comms_compose_new_upload")
+                    ),
                 ),
                 rx.cond(
                     CommunicationsState.attach_filenames.length() > 0,

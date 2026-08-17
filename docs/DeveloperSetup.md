@@ -29,7 +29,7 @@ reflex run
 
 At this point, expect the app to boot and the frontend to compile. Pages that hit the database will fail until the local `TenantCRM_Test` / `TenantCRM` databases exist and are reachable — that's a separate step, not a sign anything above is broken. See `docs/Database.md`.
 
-**Known outstanding issue (as of 2026-08-16):** even with a correct install, `reflex run` currently crashes compiling the `tenants` and `communications` pages with `EventHandlerArgTypeMismatchError` on their file-upload handlers. This is a real app-code compatibility gap (an outdated `on_drop=` binding pattern), not a setup mistake — see `Undelivered Handoffs/LucidoPM_ChatGPT_Handoff_49_UploadHandlerCompat.md` for the fix, not yet implemented.
+**Verified working (2026-08-16):** `reflex run` boots cleanly, all 17 registered pages compile, and the app renders correctly in a browser (dashboard, tenants, and communications pages confirmed via screenshot, zero page errors). Getting there required three fixes — a real crash (outdated `on_drop=` upload-handler binding in `tenants`/`communications`) and two cosmetic machine-specific issues (a logo-lookup fallback path broken by the restructure, and a hardcoded old-machine file-picker default directory) — all implemented and verified; see `Completed Handoffs/LucidoPM_ChatGPT_Handoff_49_StandUpOnNewLaptop.md`.
 
 ### Why `requirements.txt` pins exact versions, not ranges
 

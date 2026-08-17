@@ -16,13 +16,9 @@ from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 )
 
-BASE_DIR = r"C:\Dell Inspirion\TenantCRM\LucidPM\LucidPM"
-
-
 def _logo_path(filename: str) -> Optional[str]:
     for candidate in [
-        os.path.join(BASE_DIR, filename),
-        os.path.join(os.path.dirname(__file__), "..", filename),
+        os.path.join(os.path.dirname(__file__), "..", "..", filename),
         filename,
     ]:
         if os.path.isfile(candidate):

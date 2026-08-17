@@ -15,15 +15,10 @@ from reportlab.platypus import (
     Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle, Image
 )
 
-# Base directory where logo files live
-BASE_DIR = r"C:\Dell Inspirion\TenantCRM\LucidPM\LucidPM"
-
-
 def _logo_path(filename: str) -> Optional[str]:
     """Return absolute path to a logo file if it exists, else None."""
     candidates = [
-        os.path.join(BASE_DIR, filename),
-        os.path.join(os.path.dirname(__file__), "..", filename),
+        os.path.join(os.path.dirname(__file__), "..", "..", filename),
         filename,
     ]
     for p in candidates:

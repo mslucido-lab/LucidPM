@@ -5211,7 +5211,9 @@ def attachment_picker_panel_tenant() -> rx.Component:
                 id="email_attachment_upload_tenant",
                 accept={"application/pdf": [".pdf"]},
                 max_files=5,
-                on_drop=TenantState.handle_attachment_upload,
+                on_drop=TenantState.handle_attachment_upload(
+                    rx.upload_files(upload_id="email_attachment_upload_tenant")
+                ),
             ),
             rx.cond(
                 TenantState.attach_filenames.length() > 0,
