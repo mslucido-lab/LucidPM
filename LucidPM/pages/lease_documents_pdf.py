@@ -66,13 +66,14 @@ from xml.sax.saxutils import escape
 
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
+from reportlab.lib import colors
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.platypus import SimpleDocTemplate, Spacer, Preformatted, KeepTogether, Paragraph, CondPageBreak, Table, TableStyle
 
 DEFAULT_DOCUMENT_ROOT = r"C:\Dell Inspirion\TenantCRM\LeaseDocuments"
 
 try:
-    from LucidPM.pages.lease_render_styles import (
+    from LucidPM.lease_render_styles import (
         PAGE_SETUP,
         LEASE_STYLES,
         LEASE_MONOSPACE,
@@ -557,7 +558,79 @@ def _is_signature_block(block: str) -> bool:
     text = str(block or "").strip().lower()
     return any(term in text for term in [
         "landlord", "tenant", "witness", "by:", "name:", "title:"
-    ]) and ("____" in text or "signature" in text)
+    ]) and "____" in text
+
+
+def _is_fact_table_block(block: str) -> bool:
+    """Detect an explicitly-authored fact table: <table>...</table> wrapping
+    'Label: value' lines. Explicit marker (same convention as the '>>' indent
+    prefix) so ordinary clause prose containing a colon never false-positives."""
+    text = str(block or "").strip()
+    return bool(re.match(r"^<table>", text, re.IGNORECASE)) and bool(
+        re.search(r"</table>\s*$", text, re.IGNORECASE)
+    )
+
+
+def _fact_table_rows(block: str) -> list[tuple[str, str]]:
+    inner = re.sub(r"^<table>\s*", "", block.strip(), flags=re.IGNORECASE)
+    inner = re.sub(r"\s*</table>$", "", inner, flags=re.IGNORECASE)
+    rows = []
+    for line in inner.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        label, sep, value = line.partition(":")
+        if not sep:
+            raise ValueError(
+                f"Fact table row is missing a ':' separator and cannot be rendered: {line!r}"
+            )
+        rows.append((label.strip(), value.strip()))
+    return rows
+
+
+def _fact_table_flowable(rows: list[tuple[str, str]]):
+    """Render a bordered label/value fact table authored in section content."""
+    if not rows:
+        return []
+
+    label_style = ParagraphStyle(
+        "FactTableLabel",
+        parent=LEASE_STYLES["CLAUSE_BODY"],
+        fontName="Times-Bold",
+        leftIndent=0,
+        firstLineIndent=0,
+        alignment=0,
+        spaceAfter=0,
+    )
+    value_style = ParagraphStyle(
+        "FactTableValue",
+        parent=label_style,
+        fontName="Times-Roman",
+    )
+
+    effective_setup = _page_setup_with_word_margins()
+    frame_width = (
+        letter[0]
+        - effective_setup.get("leftMargin", 36)
+        - effective_setup.get("rightMargin", 36)
+    )
+    label_w = 1.4 * inch
+    value_w = frame_width - label_w
+
+    table_rows = [
+        [Paragraph(_xml(label), label_style), Paragraph(_xml(value), value_style)]
+        for label, value in rows
+    ]
+    tbl = Table(table_rows, colWidths=[label_w, value_w], hAlign="LEFT")
+    tbl.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.75, colors.black),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    return [KeepTogether([tbl]), Spacer(1, 8)]
 
 
 def _is_article_heading(block: str) -> bool:
@@ -810,6 +883,9 @@ def _paragraph_for_block(block: str):
             leftIndent=(getattr(LEASE_STYLES["CLAUSE_BODY"], "leftIndent", 0) or 0) + 36,
         )
         return _markup_flowables(clean[2:].lstrip(), indented_style)
+
+    if _is_fact_table_block(clean):
+        return _fact_table_flowable(_fact_table_rows(clean))
 
     if _is_doc_title(clean):
         return _markup_flowables(clean, LEASE_STYLES["DOC_TITLE"])

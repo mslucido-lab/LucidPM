@@ -223,6 +223,7 @@ Four-tab layout:
 from __future__ import annotations
 
 import datetime
+import json
 import os
 import re
 from typing import Optional
@@ -2748,21 +2749,6 @@ class LeaseDocumentState(AppState):
     def set_p_display_label(self, v: str): self.p_display_label = v
     def set_p_content(self, v: str): self.p_content = v
 
-    def append_token_to_p_content(self, token: str):
-        """Append a merge token into the active clause/section text editor.
-
-        Reflex cannot reliably insert at cursor position from Python state, so this
-        v3.0.12 helper appends to the end with clean spacing. Later polish can
-        add cursor-position insertion with client-side JavaScript.
-        """
-        token_text = str(token or "").strip()
-        if not token_text:
-            return
-        current = str(self.p_content or "")
-        if current and not current.endswith((" ", "\n")):
-            current += " "
-        self.p_content = current + token_text
-
     def set_paste_clause_text(self, v: str): self.paste_clause_text = v
     def set_library_search(self, v: str): self.library_search = v
     def set_library_type_filter(self, v: str): self.library_type_filter = v
@@ -3195,21 +3181,51 @@ LEASE_DOCUMENTS_RESIZER_SCRIPT = """
 """
 
 
-def _token_insert_button(token: str) -> rx.Component:
+def _insert_token_at_cursor_script(token: str, target_id: str) -> str:
+    """JS: insert `token` into the textarea `target_id` at the current cursor
+    position (replacing any active selection) instead of always appending to
+    the end, then restores focus/cursor right after the inserted token.
+
+    Reflex state can't see the browser's cursor position, so this runs
+    entirely client-side: it writes the new value through the native
+    HTMLTextAreaElement setter and dispatches a real "input" event so
+    React's on_change (and therefore LeaseDocumentState.p_content) picks up
+    the change exactly as if the user had typed it.
+    """
+    token_js = json.dumps(str(token or ""))
+    target_js = json.dumps(target_id)
+    return (
+        "(function() {"
+        f"  const el = document.getElementById({target_js});"
+        "   if (!el) return;"
+        f"  const token = {token_js};"
+        "   const start = el.selectionStart ?? el.value.length;"
+        "   const end = el.selectionEnd ?? el.value.length;"
+        "   const newValue = el.value.slice(0, start) + token + el.value.slice(end);"
+        "   const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;"
+        "   setter.call(el, newValue);"
+        "   el.dispatchEvent(new Event('input', { bubbles: true }));"
+        "   const pos = start + token.length;"
+        "   requestAnimationFrame(() => { el.focus(); el.setSelectionRange(pos, pos); });"
+        "})();"
+    )
+
+
+def _token_insert_button(token: str, target_id: str) -> rx.Component:
     return rx.button(
         token,
         size="1",
         variant="soft",
         color_scheme="purple",
-        on_click=LeaseDocumentState.append_token_to_p_content(token),
+        on_click=rx.call_script(_insert_token_at_cursor_script(token, target_id)),
     )
 
 
-def _token_group(label: str, tokens: list[str]) -> rx.Component:
+def _token_group(label: str, tokens: list[str], target_id: str) -> rx.Component:
     return rx.vstack(
         rx.text(label, size="1", weight="bold", color="#555"),
         rx.hstack(
-            *[_token_insert_button(token) for token in tokens],
+            *[_token_insert_button(token, target_id) for token in tokens],
             wrap="wrap",
             spacing="2",
         ),
@@ -3219,7 +3235,7 @@ def _token_group(label: str, tokens: list[str]) -> rx.Component:
     )
 
 
-def _available_token_buttons_panel() -> rx.Component:
+def _available_token_buttons_panel(target_id: str) -> rx.Component:
     return rx.box(
         rx.vstack(
             rx.text("Available tokens", size="1", weight="bold", color="#555"),
@@ -3234,7 +3250,7 @@ def _available_token_buttons_panel() -> rx.Component:
                 "{{PremisesIntro}}",
                 "{{PremisesDescription}}",
                 "{{LeaseTermBlock}}",
-            ]),
+            ], target_id),
             _token_group("Tenant", [
                 "{{TenantName}}",
                 "{{TenantNameWithGuarantor}}",
@@ -3247,7 +3263,7 @@ def _available_token_buttons_panel() -> rx.Component:
                 "{{TenantContactTitle}}",
                 "{{TenantContactEmail}}",
                 "{{TenantContactPhone}}",
-            ]),
+            ], target_id),
             _token_group("Property / Suite", [
                 "{{PropertyName}}",
                 "{{LandlordEntity}}",
@@ -3261,12 +3277,14 @@ def _available_token_buttons_panel() -> rx.Component:
                 "{{PropertyAddress}}",
                 "{{LegalDescription}}",
                 "{{LeaseNoticeAddress}}",
-            ]),
+            ], target_id),
             _token_group("Lease Dates / Term", [
                 "{{LeaseStart}}",
                 "{{LeaseEnd}}",
                 "{{LeaseStartDate}}",
                 "{{LeaseEndDate}}",
+                "{{LeaseStartLong}}",
+                "{{LeaseEndLong}}",
                 "{{LeaseStartOrdinal}}",
                 "{{LeaseStartMonth}}",
                 "{{LeaseStartYear}}",
@@ -3275,11 +3293,12 @@ def _available_token_buttons_panel() -> rx.Component:
                 "{{LeaseEndYear}}",
                 "{{LeaseTermDescription}}",
                 "{{LeaseTermDays}}",
-            ]),
+            ], target_id),
             _token_group("Rent / Payment", [
                 "{{RentAmount}}",
                 "{{BaseRent}}",
                 "{{BaseRentWords}}",
+                "{{BaseRentWordsTitle}}",
                 "{{TotalRent}}",
                 "{{TotalRentWords}}",
                 "{{PaymentScheduleBlock}}",
@@ -3288,7 +3307,7 @@ def _available_token_buttons_panel() -> rx.Component:
                 "{{LateChargePct}}",
                 "{{LateChargeFlatFee}}",
                 "{{LateChargePerDay}}",
-            ]),
+            ], target_id),
             _token_group("Options / Other", [
                 "{{ExtensionTermMonths}}",
                 "{{ExtensionTermDescription}}",
@@ -3298,8 +3317,23 @@ def _available_token_buttons_panel() -> rx.Component:
                 "{{HVACWarrantyPeriod}}",
                 "{{HVACWarrantyYears}}",
                 "{{GeneratedDate}}",
-            ]),
-            rx.text("Click a token to append it to the clause text.", size="1", color="#777"),
+            ], target_id),
+            _token_group("Amendment / Renewal", [
+                "{{AmendmentNumber}}",
+                "{{AmendmentNumberProperCase}}",
+                "{{AmendmentEffectiveDateLong}}",
+                "{{AmendmentEndDateLong}}",
+                "{{OriginalLeaseExecutionDateLong}}",
+                "{{OriginalLeaseStartDateLong}}",
+                "{{OriginalLeaseEndDateLong}}",
+                "{{OriginalLeaseDescription}}",
+                "{{PriorAmendmentsClause}}",
+                "{{LandlordEntityUpper}}",
+                "{{TenantNameUpper}}",
+                "{{TenantNameWithDBAUpper}}",
+                "{{AmendmentTermBlock}}",
+            ], target_id),
+            rx.text("Click a token to insert it at your cursor position.", size="1", color="#777"),
             spacing="2",
             align_items="start",
             width="100%",
@@ -3510,6 +3544,7 @@ def _tab_parse() -> rx.Component:
                             align="center",
                         ),
                         rx.text_area(
+                            id="lease-clause-content-textarea",
                             value=LeaseDocumentState.p_content,
                             on_change=LeaseDocumentState.set_p_content,
                             placeholder="Paste or type this clause text here. This content will be saved with the new text-backed section.",
@@ -3521,7 +3556,7 @@ def _tab_parse() -> rx.Component:
                             rx.text(LeaseDocumentState.detected_section_tokens, size="1", color="#666"),
                             style={"background": "#f8f9fc", "border": "1px solid #e1e5ee", "border_radius": "8px", "padding": "10px", "width": "100%"},
                         ),
-                        _available_token_buttons_panel(),
+                        _available_token_buttons_panel("lease-clause-content-textarea"),
                         spacing="2",
                         width="100%",
                     ),
@@ -3773,6 +3808,7 @@ def _tab_library() -> rx.Component:
                         width="100%", align="center",
                     ),
                     rx.text_area(
+                        id="lease-section-content-textarea",
                         value=LeaseDocumentState.p_content,
                         on_change=LeaseDocumentState.set_p_content,
                         placeholder="This Lease shall commence on {{LeaseStart}} and expire on {{LeaseEnd}}...",
@@ -3784,7 +3820,7 @@ def _tab_library() -> rx.Component:
                         rx.text(LeaseDocumentState.detected_section_tokens, size="1", color="#666"),
                         style={"background": "#f8f9fc", "border": "1px solid #e1e5ee", "border_radius": "8px", "padding": "10px", "width": "100%"},
                     ),
-                    _available_token_buttons_panel(),
+                    _available_token_buttons_panel("lease-section-content-textarea"),
                     rx.hstack(
                         rx.button(
                             "Save Section",

@@ -398,6 +398,18 @@ def number_to_words(value: Any) -> str:
     return f"{words} and {cents:02d}/100 dollars"
 
 
+def _title_case_amount_words(words: str) -> str:
+    """Title-case a number_to_words() result for check-style formatting, e.g.
+    'one thousand three hundred sixty-five and 00/100 dollars' ->
+    'One Thousand Three Hundred Sixty-Five and 00/100 Dollars'.
+    Keeps 'and' lowercase and capitalizes each side of a hyphen."""
+    def cap_word(w: str) -> str:
+        if w.lower() == "and":
+            return "and"
+        return "-".join(seg[:1].upper() + seg[1:] if seg else seg for seg in w.split("-"))
+    return " ".join(cap_word(w) for w in str(words or "").split(" "))
+
+
 def _load_rent_schedule_rows(lease_id: int, db: str) -> list[dict]:
     if not _table_exists("LeaseRentSchedule", db):
         return []
@@ -625,13 +637,14 @@ def get_lease_merge_context(tenant_id: int, lease_id: int, db: str = TEST_DB_NAM
     parent_lease = {}
     if parent_lease_id:
         parent_lease = _first(run_query(
-            "SELECT LeaseStart, ExecutionDate FROM Leases WHERE LeaseID = ?",
+            "SELECT LeaseStart, LeaseEnd, ExecutionDate FROM Leases WHERE LeaseID = ?",
             (int(parent_lease_id),),
             db=db,
         ))
 
     parent_execution = _date(parent_lease.get("ExecutionDate")) if parent_lease else None
     parent_start = _date(parent_lease.get("LeaseStart")) if parent_lease else None
+    parent_end = _date(parent_lease.get("LeaseEnd")) if parent_lease else None
 
     amendment_number_word = ""
     if parent_lease_id:
@@ -683,17 +696,26 @@ def get_lease_merge_context(tenant_id: int, lease_id: int, db: str = TEST_DB_NAM
         db=db,
     ))
 
-    guarantor = _first(run_query(
-        "SELECT TOP 1 FirstName, LastName FROM Contacts "
+    guarantor_rows = run_query(
+        "SELECT FirstName, LastName FROM Contacts "
         "WHERE TenantID = ? AND ContactRole = 'Guarantor' "
         "ORDER BY ContactID",
         (tenant_id,),
         db=db,
-    ))
-    guarantor_name = " ".join(x for x in [
-        _s(guarantor.get("FirstName")),
-        _s(guarantor.get("LastName")),
-    ] if x)
+    )
+    guarantor_names = [
+        name for name in (
+            " ".join(x for x in [_s(g.get("FirstName")), _s(g.get("LastName"))] if x)
+            for g in guarantor_rows
+        )
+        if name
+    ]
+    if len(guarantor_names) <= 1:
+        guarantor_name = guarantor_names[0] if guarantor_names else ""
+    elif len(guarantor_names) == 2:
+        guarantor_name = f"{guarantor_names[0]} and {guarantor_names[1]}"
+    else:
+        guarantor_name = ", ".join(guarantor_names[:-1]) + f", and {guarantor_names[-1]}"
 
     lease_start = _date(lease.get("LeaseStart"))
     lease_end = _date(lease.get("LeaseEnd"))
@@ -857,6 +879,8 @@ def get_lease_merge_context(tenant_id: int, lease_id: int, db: str = TEST_DB_NAM
         "OriginalLeaseExecutionDateLong": _long_date(parent_execution) if parent_lease_id else "",
         "OriginalLeaseStartDate": _short_date_no_leading_zero(parent_start) if parent_lease_id else "",
         "OriginalLeaseStartDateLong": _long_date(parent_start) if parent_lease_id else "",
+        "OriginalLeaseEndDate": _short_date_no_leading_zero(parent_end) if parent_lease_id else "",
+        "OriginalLeaseEndDateLong": _long_date(parent_end) if parent_lease_id else "",
         "PriorAmendmentsClause": prior_amendments_text,
 
         # HVAC warranty
@@ -874,6 +898,23 @@ def get_lease_merge_context(tenant_id: int, lease_id: int, db: str = TEST_DB_NAM
     context["LandlordEntityUpper"] = context.get("LandlordEntity", "").upper()
     context["TenantNameUpper"] = context.get("TenantNameWithGuarantor", "").upper()
     context["TenantNameWithDBAUpper"] = context.get("TenantNameWithDBA", "").upper()
+
+    # Check-style capitalized rent words, e.g.
+    # "One Thousand Three Hundred Sixty-Five and 00/100 Dollars"
+    # Additive alongside BaseRentWords (lowercase) rather than replacing it —
+    # existing authored clauses already rely on BaseRentWords staying lowercase.
+    context["BaseRentWordsTitle"] = _title_case_amount_words(context["BaseRentWords"])
+
+    # Original lease summary sentence for renewal/notice documents, e.g.
+    # "Short Form Commercial Lease beginning September 1, 2025, and ending August 31, 2026"
+    # Deliberately built from the PARENT lease's own dates, not this lease's —
+    # this lease record IS the renewal term being documented, so its own
+    # LeaseStartLong/LeaseEndLong describe the *new* term, not the original one.
+    context["OriginalLeaseDescription"] = (
+        f"{context['DocTitle'].title()} beginning {context['OriginalLeaseStartDateLong']}, "
+        f"and ending {context['OriginalLeaseEndDateLong']}"
+        if parent_lease_id and parent_start and parent_end else ""
+    )
 
     # Compatibility aliases for current test templates.
     context["RentAmount"] = context["BaseRent"]
