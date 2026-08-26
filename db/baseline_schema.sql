@@ -453,6 +453,7 @@ CREATE TABLE dbo.[Tenants] (
     [Suite] NVARCHAR(50) NULL,
     [ProspectID] INT NULL,
     [SuiteID] INT NULL,
+    [IsDBA] BIT NOT NULL DEFAULT ((0)),
     CONSTRAINT [PK_Tenants] PRIMARY KEY CLUSTERED ([TenantID])
 );
 

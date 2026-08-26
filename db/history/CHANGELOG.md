@@ -2,7 +2,7 @@
 
 This is the authoritative timeline, pulled directly from `dbo.SchemaChangeLog` (queried live on 2026-08-17). It is **not** derived from the files in this folder — it's the other way around: the files that survive are cross-referenced against this log, not the reverse.
 
-**Counts:** `TenantCRM_Test` has 36 logged changes. `TenantCRM` (production) has 35 — missing only `20260426_Task1_Add_TenantID_To_LeaseGeneratedDocuments` (see note below; this is a logging gap, not a real schema difference).
+**Counts:** `TenantCRM_Test` has 37 logged changes. `TenantCRM` (production) has 36 — missing only `20260426_Task1_Add_TenantID_To_LeaseGeneratedDocuments` (see note below; this is a logging gap, not a real schema difference).
 
 **Of these 36 real changes, only 11 have a surviving, runnable SQL file** (`db/history/00N_*.sql`). One more (`task3_lease_template_sections_isactive.sql`) was applied but never logged — its file survives in `db/history/untracked/`. One logged entry (`lease_section_schema_cleanup_v2_8_6`) is a changelog-only marker with no real DDL in its file — also in `db/history/untracked/`. **The other 24 changes have no recoverable SQL at all** — the script that made them was never saved to this repo. All that survives for those is what's in this table: the date, who ran it, and the Notes text they wrote at the time.
 
@@ -49,6 +49,7 @@ Don't try to rebuild a database by replaying this list — most of it can't be r
 | 34 | 2026-05-20 12:17 | `add_lease_termination_date.sql` | msluc | *(missing — adds `Leases.LeaseTerminationDate`)* |
 | 35 | 2026-05-30 18:54 | `DataCleanse_AddressLabels_01.sql` | msluc | *(missing — one-time data cleanse, not pure schema)* |
 | 36 | 2026-06-04 00:55 | `lease_amendment_schema.sql` | msluc | *(missing — adds `Leases.ParentLeaseID`, `Leases.ExecutionDate`)* |
+| 37 | 2026-08-25 23:26 | `add_tenant_isdba_flag.sql` | msluc | [`012_...`](012_2026-08-25_2326_add_tenant_isdba_flag.sql) — adds `Tenants.IsDBA` for DBA-aware lease merge tokens |
 
 ---
 

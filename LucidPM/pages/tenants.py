@@ -72,7 +72,7 @@ import os
 import re
 
 from LucidPM.state import (
-    AppState, run_query, run_exec, fmt_date,
+    AppState, run_query, run_exec, fmt_date, resolve_upload_filename,
     BRAND_PRIMARY, BRAND_DARK, METHOD_CHOICES, TEST_DB_NAME,
 )
 from LucidPM.components.sidebar import page_shell
@@ -381,6 +381,7 @@ class TenantState(AppState):
     tenant_suite: str = ""
     tenant_property: str = ""
     tenant_notes: str = ""
+    tenant_is_dba: bool = False
     tenant_initials: str = ""
 
     # Status and type lookups for edit/create form
@@ -398,6 +399,7 @@ class TenantState(AppState):
     f_tenant_property: str = ""
     f_tenant_suite: str = ""
     f_tenant_notes: str = ""
+    f_tenant_is_dba: bool = False
     tenant_form_error: str = ""
     tenant_form_success: str = ""
 
@@ -966,7 +968,7 @@ class TenantState(AppState):
     def _load_tenant_detail(self, tenant_id: int):
         rows = run_query(
             "SELECT t.TenantID, t.TenantName, s.TenantStatusName, tt.TenantTypeName, "
-            "ps.SuiteLabel, p.PropertyName, t.Notes "
+            "ps.SuiteLabel, p.PropertyName, t.Notes, t.IsDBA "
             "FROM Tenants t "
             "LEFT JOIN TenantStatuses s ON t.TenantStatusID = s.TenantStatusID "
             "LEFT JOIN TenantTypes tt ON t.TenantTypeID = tt.TenantTypeID "
@@ -987,6 +989,7 @@ class TenantState(AppState):
         self.tenant_suite          = str(r.get("SuiteLabel") or "")
         self.tenant_property       = str(r.get("PropertyName") or "")
         self.tenant_notes          = str(r.get("Notes") or "")
+        self.tenant_is_dba         = bool(r.get("IsDBA"))
         name = str(r.get("TenantName") or "")
         self.tenant_initials = "".join([w[0].upper() for w in name.split() if w][:2]) or "?"
         self.load_contacts()
@@ -1825,6 +1828,7 @@ class TenantState(AppState):
         self.f_tenant_property = self.tenant_property
         self.f_tenant_suite    = self.tenant_suite
         self.f_tenant_notes    = self.tenant_notes
+        self.f_tenant_is_dba   = self.tenant_is_dba
         if self.f_tenant_property in self.property_names:
             self._load_suite_options(self.f_tenant_property)
 
@@ -1841,6 +1845,7 @@ class TenantState(AppState):
         self.f_tenant_property = self.property_names[0] if self.property_names else ""
         self.f_tenant_suite    = "(No suite)"
         self.f_tenant_notes    = ""
+        self.f_tenant_is_dba   = False
         if self.property_names:
             self._load_suite_options(self.property_names[0])
 
@@ -1853,6 +1858,7 @@ class TenantState(AppState):
     def set_f_tenant_status(self, v: str):   self.f_tenant_status = v
     def set_f_tenant_type(self, v: str):     self.f_tenant_type = v
     def set_f_tenant_notes(self, v: str):    self.f_tenant_notes = v
+    def set_f_tenant_is_dba(self, v: bool):  self.f_tenant_is_dba = v
 
     def set_f_tenant_property(self, v: str):
         self.f_tenant_property = v
@@ -1895,9 +1901,10 @@ class TenantState(AppState):
         if self.tenant_is_new:
             run_exec(
                 "INSERT INTO Tenants (TenantName, TenantStatusID, TenantTypeID, "
-                "PropertyID, Suite, SuiteID, Notes) VALUES (?,?,?,?,?,?,?)",
+                "PropertyID, Suite, SuiteID, Notes, IsDBA) VALUES (?,?,?,?,?,?,?,?)",
                 (self.f_tenant_name.strip(), status_id, type_id,
-                 prop_id, suite_label, suite_id, self.f_tenant_notes),
+                 prop_id, suite_label, suite_id, self.f_tenant_notes,
+                 self.f_tenant_is_dba),
                 db=self.db,
             )
             # Find new tenant ID
@@ -1913,9 +1920,10 @@ class TenantState(AppState):
         else:
             run_exec(
                 "UPDATE Tenants SET TenantName=?, TenantStatusID=?, TenantTypeID=?, "
-                "PropertyID=?, Suite=?, SuiteID=?, Notes=? WHERE TenantID=?",
+                "PropertyID=?, Suite=?, SuiteID=?, Notes=?, IsDBA=? WHERE TenantID=?",
                 (self.f_tenant_name.strip(), status_id, type_id,
                  prop_id, suite_label, suite_id, self.f_tenant_notes,
+                 self.f_tenant_is_dba,
                  self.tenant_id),
                 db=self.db,
             )
@@ -2646,9 +2654,9 @@ class TenantState(AppState):
     async def handle_attachment_upload(self, files: list[rx.UploadFile]):
         self.attach_filenames = []
         self.attach_file_bytes = []
-        for f in files:
+        for i, f in enumerate(files):
             data = await f.read()
-            self.attach_filenames.append(f.filename)
+            self.attach_filenames.append(resolve_upload_filename(f, i))
             self.attach_file_bytes.append(data)
 
     def clear_attachments(self):
@@ -3739,6 +3747,24 @@ def tenant_edit_form() -> rx.Component:
                              on_change=TenantState.set_f_tenant_notes,
                              placeholder="Notes...",
                              width="100%", rows="3"),
+            ),
+            rx.vstack(
+                rx.hstack(
+                    rx.text("Doing Business As (d.b.a.)", size="1", color="#666"),
+                    rx.switch(
+                        checked=TenantState.f_tenant_is_dba,
+                        on_change=TenantState.set_f_tenant_is_dba,
+                    ),
+                    spacing="2",
+                    align="center",
+                ),
+                rx.text(
+                    "Tenant Name is the trade name this individual or partnership operates under.",
+                    size="1",
+                    color="#777",
+                ),
+                spacing="1",
+                align_items="start",
             ),
             rx.cond(
                 TenantState.tenant_form_error != "",

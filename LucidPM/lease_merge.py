@@ -609,7 +609,7 @@ def get_lease_merge_context(tenant_id: int, lease_id: int, db: str = TEST_DB_NAM
     """
     lease = _first(run_query(
         "SELECT l.*, l.ExecutionDate, l.ParentLeaseID, "
-        "t.TenantName, t.Suite AS TenantSuiteText, "
+        "t.TenantName, ISNULL(t.IsDBA, 0) AS IsDBA, t.Suite AS TenantSuiteText, "
         "p.PropertyName, p.PropertyAddress1, p.PropertyAddress2, p.PropertyCity, p.PropertyState, p.PropertyZip, p.TaxAccountNumber, "
         "ISNULL(p.LandlordEntityName,'') AS LandlordEntityName, ISNULL(p.PropertyCounty,'') AS PropertyCounty, "
         "ISNULL(p.PropertyLegalDescription,'') AS PropertyLegalDescription, ISNULL(p.PropertyUseDefault,'') AS PropertyUseDefault, "
@@ -717,6 +717,8 @@ def get_lease_merge_context(tenant_id: int, lease_id: int, db: str = TEST_DB_NAM
     else:
         guarantor_name = ", ".join(guarantor_names[:-1]) + f", and {guarantor_names[-1]}"
 
+    tenant_name = _s(lease.get("TenantName"))
+
     lease_start = _date(lease.get("LeaseStart"))
     lease_end = _date(lease.get("LeaseEnd"))
     execution_date = _date(lease.get("ExecutionDate"))
@@ -757,17 +759,21 @@ def get_lease_merge_context(tenant_id: int, lease_id: int, db: str = TEST_DB_NAM
         "JurisdictionBlock": f"State of {state}\nCounty of {county}",
 
         "TenantID": str(tenant_id),
-        "TenantName": _s(lease.get("TenantName")),
+        "TenantName": tenant_name,
 
         # Guarantor and DBA name variants
         "GuarantorName": guarantor_name,
         "TenantNameWithGuarantor": (
-            f"{_s(lease.get('TenantName'))} and {guarantor_name}"
+            f"{tenant_name} and {guarantor_name}"
             if guarantor_name
-            else _s(lease.get("TenantName"))
+            else tenant_name
         ),
-        "DBAName": "",
-        "TenantNameWithDBA": _s(lease.get("TenantName")),
+        "DBAName": tenant_name if lease.get("IsDBA") else "",
+        "TenantNameWithDBA": (
+            f"{guarantor_name} d.b.a. {tenant_name}"
+            if lease.get("IsDBA") and guarantor_name
+            else tenant_name
+        ),
         "TenantPrimaryContact": full_contact_name,
         "TenantContactFirstName": _s(contact.get("FirstName")),
         "TenantContactLastName": _s(contact.get("LastName")),
