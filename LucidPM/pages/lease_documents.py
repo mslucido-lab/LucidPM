@@ -3328,6 +3328,8 @@ def _available_token_buttons_panel(target_id: str) -> rx.Component:
                 "{{OriginalLeaseStartDateLong}}",
                 "{{OriginalLeaseEndDateLong}}",
                 "{{OriginalLeaseDescription}}",
+                "{{OriginalOptionRent}}",
+                "{{OriginalOptionRentWords}}",
                 "{{PriorAmendmentsClause}}",
                 "{{LandlordEntityUpper}}",
                 "{{TenantNameUpper}}",

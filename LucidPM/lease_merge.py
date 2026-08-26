@@ -732,6 +732,15 @@ def get_lease_merge_context(tenant_id: int, lease_id: int, db: str = TEST_DB_NAM
         option_term_months = _extension_term_months_from_lease(lease_start, lease_end)
     option_rent = option_schedule_row.get("RentAmount") if option_schedule_row else None
 
+    # Original lease's own option-clause rent (what was offered at signing) --
+    # only meaningful when the CURRENT lease is itself a renewal (ParentLeaseID
+    # set). Deliberately separate from option_rent above: that reflects the
+    # currently-loaded lease's own option row, which is empty once you're
+    # generating against the renewal lease itself (the renewal has no "Option
+    # Term Increase" row of its own, just its own Base rent).
+    original_option_row = _get_option_schedule_row(int(parent_lease_id), db) if parent_lease_id else {}
+    original_option_rent = original_option_row.get("RentAmount") if original_option_row else None
+
     first_schedule_rent, rent_schedule_text = _rent_schedule_summary(lease_id, db)
     payment_schedule_block, total_rent = _payment_schedule_block(lease, lease_id, db)
     base_rent = first_schedule_rent or fmt_money(lease.get("RentAmount"))
@@ -871,6 +880,13 @@ def get_lease_merge_context(tenant_id: int, lease_id: int, db: str = TEST_DB_NAM
         "ExtensionNoticePeriod": "three (3) months",
         "ExtensionRent": fmt_money(option_rent) if option_rent is not None else "",
         "ExtensionRentWords": number_to_words(option_rent) if option_rent is not None else "",
+
+        # Original (parent) lease's option-clause rent -- what was offered at
+        # signing, still reachable even when generating against the renewal
+        # lease itself (whose own "option row" is empty by then). Blank on a
+        # base lease with no ParentLeaseID, same as the other OriginalLease* tokens.
+        "OriginalOptionRent": fmt_money(original_option_rent) if original_option_rent is not None else "",
+        "OriginalOptionRentWords": number_to_words(original_option_rent) if original_option_rent is not None else "",
 
         # Amendment tokens - resolve from ParentLeaseID. Base leases return empty strings.
         "AmendmentNumber": amendment_number_word,
