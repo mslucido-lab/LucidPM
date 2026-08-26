@@ -5,7 +5,9 @@ Route: /leases-expiring
 Mirrors the dashboard version from the Streamlit app:
   - Horizon window dropdown (30 / 60 / 90 / 180 / 365 days)
   - Expiration events: Fixed Term / Multi-year / Option Term leases ending in window
-    (suppressed when a successor lease exists for same tenant/suite)
+    (suppressed when a successor lease exists for same tenant/suite; uses a real
+    future-dated schedule row for the recommendation if one exists, falls back to
+    recommended 5%/$50 minimum otherwise)
   - Escalation events: next anniversary of every active lease inside the window
     (uses scheduled rent if available, falls back to recommended 5%/$50 minimum)
   - Columns: EventDate, EventType, TenantName, PropertyName, RentAmount,
@@ -60,9 +62,25 @@ def _next_anniversary(start: datetime.date, ref: datetime.date) -> datetime.date
     return candidate
 
 
+def _schedule_rows_for_lease(sched: list[dict], lease_id: int) -> list[dict]:
+    """Rows in `sched` belonging to a specific LeaseID."""
+    return [r for r in sched if r.get("LeaseID") and int(r["LeaseID"]) == lease_id]
+
+
+def _safe_rent(row: dict) -> Optional[float]:
+    """Null/NaN-safe float coercion of a schedule row's RentAmount."""
+    rent = row.get("RentAmount")
+    try:
+        if rent is None or (isinstance(rent, float) and math.isnan(rent)):
+            return None
+        return float(rent)
+    except Exception:
+        return None
+
+
 def _rent_as_of(sched: list[dict], lease_id: int, event_date: datetime.date):
     """Return (rent_float, needs_schedule_bool) for a lease as of event_date."""
-    rows = [r for r in sched if r.get("LeaseID") and int(r["LeaseID"]) == lease_id]
+    rows = _schedule_rows_for_lease(sched, lease_id)
     if not rows:
         return None, True
 
@@ -77,28 +95,39 @@ def _rent_as_of(sched: list[dict], lease_id: int, event_date: datetime.date):
         return None, True
 
     active.sort(key=lambda x: x[0], reverse=True)
-    rent = active[0][1].get("RentAmount")
-    try:
-        if rent is None or (isinstance(rent, float) and math.isnan(rent)):
-            return None, True
-        return float(rent), False
-    except Exception:
-        return None, True
+    rent = _safe_rent(active[0][1])
+    return (rent, False) if rent is not None else (None, True)
 
 
 def _rent_on_date(sched: list[dict], lease_id: int, target: datetime.date) -> Optional[float]:
     """Rent from a schedule row that starts exactly on target (for explicit step detection)."""
-    rows = [r for r in sched if r.get("LeaseID") and int(r["LeaseID"]) == lease_id]
+    rows = _schedule_rows_for_lease(sched, lease_id)
     exact = [r for r in rows if _to_date(r.get("EffectiveStartDate")) == target]
     if not exact:
         return None
-    rent = exact[0].get("RentAmount")
-    try:
-        if rent is None or (isinstance(rent, float) and math.isnan(rent)):
-            return None
-        return float(rent)
-    except Exception:
-        return None
+    return _safe_rent(exact[0])
+
+
+def _next_scheduled_rent(sched: list[dict], lease_id: int, after_date: datetime.date) -> Optional[float]:
+    """Rent from this lease's own schedule row that takes effect after after_date
+    (e.g. an Option Term Increase row already negotiated for the renewal term).
+    Returns the earliest such row's rent that is greater than zero -- a $0
+    abatement/free-rent row is skipped in favor of the next real rate, since a
+    transient concession isn't a meaningful "recommended rent" -- or None if no
+    qualifying future row exists."""
+    rows = _schedule_rows_for_lease(sched, lease_id)
+    future = sorted(
+        (
+            (s, r) for r in rows
+            if (s := _to_date(r.get("EffectiveStartDate"))) is not None and s > after_date
+        ),
+        key=lambda x: x[0],
+    )
+    for _, row in future:
+        rent = _safe_rent(row)
+        if rent is not None and rent > 0:
+            return rent
+    return None
 
 
 def _successor_starting_rent(
@@ -287,7 +316,13 @@ def _build_events(
                     rent_use, needs_sched = _rent_as_of(sched, int(lease_id), lease_end)
                     if rent_use is None:
                         rent_use = rent_amt
-                    rec_rent, rec_inc = _recommended_rent(rent_use)
+
+                    scheduled_next = _next_scheduled_rent(sched, int(lease_id), lease_end)
+                    if scheduled_next is not None and rent_use is not None:
+                        rec_rent = scheduled_next
+                        rec_inc = rec_rent - float(rent_use)
+                    else:
+                        rec_rent, rec_inc = _recommended_rent(rent_use)
                     events.append({
                         "EventDate":          lease_end,
                         "EventType":          "Expiration",
