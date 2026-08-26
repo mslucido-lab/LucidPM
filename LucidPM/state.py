@@ -50,6 +50,19 @@ def run_exec(sql: str, params: tuple = (), db: str = TEST_DB_NAME) -> None:
         conn.commit()
 
 
+def resolve_upload_filename(file, index: int, default: str = "attachment") -> str:
+    """Best-effort original filename for a Reflex UploadFile.
+
+    Reflex's UploadFile is a frozen dataclass whose __init__ never sets .filename
+    (bare access raises AttributeError) — .name, derived from the saved upload
+    path, is the real source of truth. Falls back to f"{default}_{index+1}" (not
+    a bare `default`) so multiple unnamed files in the same batch never collide
+    on the same fallback name.
+    """
+    name = getattr(file, "name", None)
+    return name or f"{default}_{index + 1}"
+
+
 def fmt_date(d) -> str:
     if d is None:
         return ""

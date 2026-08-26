@@ -19,7 +19,7 @@ from typing import Optional
 import reflex as rx
 
 from LucidPM.state import (
-    AppState, run_query, run_exec, decrypt_value,
+    AppState, run_query, run_exec, decrypt_value, resolve_upload_filename,
     BRAND_PRIMARY, BRAND_DARK, METHOD_CHOICES,
 )
 from LucidPM.components.sidebar import page_shell
@@ -1153,9 +1153,9 @@ class CommunicationsState(AppState):
     async def handle_attachment_upload(self, files: list[rx.UploadFile]):
         self.attach_filenames = []
         self.attach_file_bytes = []
-        for f in files:
+        for i, f in enumerate(files):
             data = await f.read()
-            self.attach_filenames.append(f.filename)
+            self.attach_filenames.append(resolve_upload_filename(f, i))
             self.attach_file_bytes.append(data)
 
     def clear_attachments(self):

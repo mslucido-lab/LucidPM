@@ -14,7 +14,7 @@ v7 — Full-page dynamic width tracks the resizable sidebar.
 import reflex as rx
 import datetime
 
-from LucidPM.state import AppState, run_query, run_exec, BRAND_DARK, BRAND_PRIMARY
+from LucidPM.state import AppState, run_query, run_exec, resolve_upload_filename, BRAND_DARK, BRAND_PRIMARY
 from LucidPM.components.sidebar import page_shell
 
 
@@ -427,7 +427,7 @@ class WaitingListState(AppState):
             return
 
         file = files[0]
-        self.tally_filename = file.filename or "upload.csv"
+        self.tally_filename = resolve_upload_filename(file, 0, "upload.csv")
 
         try:
             file_bytes = await file.read()

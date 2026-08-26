@@ -230,7 +230,7 @@ from typing import Optional
 
 import reflex as rx
 
-from LucidPM.state import AppState, run_query, run_exec, BRAND_DARK, BRAND_PRIMARY
+from LucidPM.state import AppState, run_query, run_exec, resolve_upload_filename, BRAND_DARK, BRAND_PRIMARY
 from LucidPM.components.sidebar import page_shell
 from LucidPM.lease_merge import extract_tokens
 from LucidPM.pages.lease_documents_pdf import (
@@ -1097,15 +1097,16 @@ class LeaseDocumentState(AppState):
             self.form_error = "Choose a PDF file to upload."
             return
         file = files[0]
-        self.selected_upload_file_name = str(getattr(file, "filename", "") or getattr(file, "name", "") or "Selected PDF")
-        if not str(file.filename or "").lower().endswith(".pdf"):
+        upload_name = resolve_upload_filename(file, 0, "Selected PDF")
+        self.selected_upload_file_name = upload_name
+        if not upload_name.lower().endswith(".pdf"):
             self.form_error = "PDF upload is supported first. Word upload will come later."
             return
         try:
             data = await file.read()
             stored_path = save_uploaded_pdf(
                 data,
-                file.filename,
+                upload_name,
                 self.storage_root,
                 self.f_property,
                 self.f_document_category,
@@ -1123,7 +1124,7 @@ class LeaseDocumentState(AppState):
                 (
                     self._selected_property_id(), self.f_template_name.strip(), self.f_document_category,
                     self.f_template_version.strip(), root, rel, 1 if self.f_is_active else 0,
-                    file.filename, stored_path, pc, self.f_notes,
+                    upload_name, stored_path, pc, self.f_notes,
                 ), db=self.db,
             )
             new_id = run_query(
