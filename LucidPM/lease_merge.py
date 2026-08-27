@@ -637,7 +637,9 @@ def get_lease_merge_context(tenant_id: int, lease_id: int, db: str = TEST_DB_NAM
     parent_lease = {}
     if parent_lease_id:
         parent_lease = _first(run_query(
-            "SELECT LeaseStart, LeaseEnd, ExecutionDate FROM Leases WHERE LeaseID = ?",
+            "SELECT l.LeaseStart, l.LeaseEnd, l.ExecutionDate, ISNULL(lt.LeaseTypeName, '') AS LeaseTypeName "
+            "FROM Leases l LEFT JOIN LeaseTypes lt ON l.LeaseTypeID = lt.LeaseTypeID "
+            "WHERE l.LeaseID = ?",
             (int(parent_lease_id),),
             db=db,
         ))
@@ -645,6 +647,12 @@ def get_lease_merge_context(tenant_id: int, lease_id: int, db: str = TEST_DB_NAM
     parent_execution = _date(parent_lease.get("ExecutionDate")) if parent_lease else None
     parent_start = _date(parent_lease.get("LeaseStart")) if parent_lease else None
     parent_end = _date(parent_lease.get("LeaseEnd")) if parent_lease else None
+    # True when the immediate parent is itself an Amendment (not a New Lease) --
+    # i.e. this lease's governing document was already amended before this
+    # record. A Renewal Option's parent is whichever document (New Lease or
+    # Amendment) actually defined the option being exercised, per the
+    # LeaseType-aware ParentLeaseID convention confirmed against real data.
+    parent_is_amendment = str(parent_lease.get("LeaseTypeName") or "").strip().upper() == "AMENDMENT"
 
     amendment_number_word = ""
     if parent_lease_id:
@@ -887,6 +895,12 @@ def get_lease_merge_context(tenant_id: int, lease_id: int, db: str = TEST_DB_NAM
         # base lease with no ParentLeaseID, same as the other OriginalLease* tokens.
         "OriginalOptionRent": fmt_money(original_option_rent) if original_option_rent is not None else "",
         "OriginalOptionRentWords": number_to_words(original_option_rent) if original_option_rent is not None else "",
+
+        # Mid-sentence insert for clauses like "The Lease{{AsAmendedPhrase}} provides...".
+        # Only true (and only ever non-blank) when the immediate parent is itself
+        # an Amendment -- never asserts amendments exist when they don't, unlike
+        # a hardcoded "as previously amended" would for a tenant with none.
+        "AsAmendedPhrase": ", as previously amended," if parent_is_amendment else "",
 
         # Amendment tokens - resolve from ParentLeaseID. Base leases return empty strings.
         "AmendmentNumber": amendment_number_word,
