@@ -33,6 +33,16 @@ from LucidPM.state import run_query, run_exec, TEST_DB_NAME
 
 TOKEN_PATTERN = re.compile(r"\{\{\s*([A-Za-z0-9_\.\-]+)\s*\}\}")
 
+# Document-wide clause numbering tokens. Resolved once per assembled package,
+# across all sections in document order, by apply_clause_numbering() -- NOT via
+# TOKEN_PATTERN / the per-section context, because their value depends on
+# position in the final document, not on lease data.
+#   {{ClauseNumber}}         -> next sequential clause number; advances counter
+#   {{ClauseNumber:Anchor}}  -> same, and records Anchor -> that number
+#   {{ClauseRef:Anchor}}     -> the number recorded for Anchor; no increment
+CLAUSE_NUMBER_PATTERN = re.compile(r"\{\{\s*ClauseNumber(?:\s*:\s*([A-Za-z0-9_\-]+))?\s*\}\}")
+CLAUSE_REF_PATTERN = re.compile(r"\{\{\s*ClauseRef\s*:\s*([A-Za-z0-9_\-]+)\s*\}\}")
+
 OWNER_BY_PROPERTY = {
     "broadway": "Dor-Sal Capital Partners, LLC",
     "walnut": "Lucido Properties SP, LLC",
@@ -1036,6 +1046,44 @@ def validate_template_tokens(template_text: str, context: dict[str, Any]) -> dic
         "empty": empty,
         "unresolved": sorted(set(missing + empty)),
     }
+
+
+def apply_clause_numbering(
+    section_texts: list[str], start: int = 1
+) -> tuple[list[str], list[str]]:
+    """Resolve clause-number and clause-reference tokens across ordered texts.
+
+    The first pass assigns sequential numbers and records named anchors. The
+    second pass resolves references, including forward references. References
+    to undefined anchors are returned in ``unresolved_refs`` and left verbatim
+    so callers can block document generation with an actionable error.
+
+    If an anchor is defined more than once, its last definition wins. Text with
+    no clause tokens is returned unchanged.
+    """
+    counter = int(start) - 1
+    anchors: dict[str, int] = {}
+
+    def _assign(match: re.Match[str]) -> str:
+        nonlocal counter
+        counter += 1
+        anchor = match.group(1)
+        if anchor:
+            anchors[anchor] = counter
+        return str(counter)
+
+    pass1 = [CLAUSE_NUMBER_PATTERN.sub(_assign, text or "") for text in section_texts]
+    unresolved: list[str] = []
+
+    def _ref(match: re.Match[str]) -> str:
+        anchor = match.group(1)
+        if anchor in anchors:
+            return str(anchors[anchor])
+        unresolved.append(f"ClauseRef:{anchor}")
+        return match.group(0)
+
+    pass2 = [CLAUSE_REF_PATTERN.sub(_ref, text) for text in pass1]
+    return pass2, sorted(set(unresolved))
 
 
 

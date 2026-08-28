@@ -66,6 +66,34 @@ Old versions are **archived, not deleted** — kept browsable in `Archived Versi
 
 *(Updated in place each session — not appended to. For deeper history, use `git log` or browse `Completed Handoffs/`.)*
 
+**As of 2026-08-27 (Handoff 52 — dynamic clause numbering):**
+- Dynamic amendment-clause numbering is implemented with document-wide
+  `{{ClauseNumber}}`, `{{ClauseNumber:Anchor}}`, and `{{ClauseRef:Anchor}}`
+  tokens (`lease_merge.apply_clause_numbering`). Number assignment and named
+  cross-reference resolution run in two passes over included text sections
+  before normal lease-token rendering; PDF-only sections do not consume
+  numbers, and undefined anchors block preview/generation with an actionable
+  error.
+- **Author `{{ClauseNumber}}` inside a `bulletText` attribute** (`<para
+  bulletText="{{ClauseNumber}}.">`), not as bare leading text — a bare
+  `{{ClauseNumber}}. Body` resolves to `3. Body`, which the PDF renderer
+  promotes to a bold whole-line heading.
+- Production `TenantCRM` Section Library rows 46, 47, 49, and 50 now use
+  `{{ClauseNumber}}` in their top-level `bulletText` values (data-update
+  script under `db/data_updates/` — run against Production by Mark). The
+  inactive Option row 41 is deliberately unchanged; its `{{SectionNumber}}`
+  mechanism is retained for backward compatibility but is legacy and
+  superseded. **Do not activate the Option section** until it is migrated to
+  `{{ClauseNumber:Option}}` — its counter is independent and it would
+  misnumber.
+- Regeneration is snapshot-based and does **not** renumber: `apply_clause_numbering`
+  is not re-run on frozen `LeasePackageSections` rows. Generate a fresh package
+  to pick up inserted/reordered clauses. Manual edits in the generated-section
+  editor should use a literal number, not the token.
+- Only cross-reference an anchor guaranteed to be included whenever the
+  referencing clause is; a reference to an excluded/undefined anchor
+  intentionally hard-blocks generation.
+
 **As of 2026-08-16 (new laptop foundation session):**
 - New laptop setup. Repo restructured to a standard Reflex project layout: the app package (`LucidPM.py`, `state.py`, `lease_merge.py`, `lease_render_styles.py`, `pages/`, `components/`, and all their `_vN` siblings) moved via `git mv` from the repo root into a new `LucidPM/` subdirectory. Repo root is now the true Reflex project root — no import statements changed, since they already assumed this layout. `pages/property_financials_analytics_v1.py`–`_v15.py` (the still-unarchived duplicates flagged back on 08-09) simply moved along with everything else to `LucidPM/pages/`; they remain unarchived. See `docs/RepositoryLayout.md`.
 - Added the missing scaffold: `rxconfig.py` (`app_name="LucidPM"`), `requirements.txt` (pinned from a verified clean install), `.env.example` (documents that no env vars are actually used — all secrets are DB-stored), `assets/` placeholder, `.gitignore` updated for `.web/`.

@@ -3252,6 +3252,18 @@ def _available_token_buttons_panel(target_id: str) -> rx.Component:
                 "{{PremisesDescription}}",
                 "{{LeaseTermBlock}}",
             ], target_id),
+            _token_group("Clause Numbering", [
+                "{{ClauseNumber}}",
+                "{{ClauseNumber:Anchor}}",
+                "{{ClauseRef:Anchor}}",
+            ], target_id),
+            rx.text(
+                'Use inside bulletText: <para bulletText="{{ClauseNumber}}.">. '
+                "Replace Anchor with a short name to cross-reference a clause "
+                "elsewhere with {{ClauseRef:Anchor}}.",
+                size="1",
+                color="#666",
+            ),
             _token_group("Tenant", [
                 "{{TenantName}}",
                 "{{TenantNameWithGuarantor}}",

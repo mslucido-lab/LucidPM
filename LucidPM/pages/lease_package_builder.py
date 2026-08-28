@@ -76,6 +76,7 @@ from LucidPM.pages.lease_documents_pdf import (
     render_text_sections_to_pdf,
 )
 from LucidPM.lease_merge import (
+    apply_clause_numbering,
     get_lease_merge_context,
     render_text_template,
     validate_template_tokens,
@@ -93,6 +94,16 @@ RESPONSIVE_GRID_STYLE = {
 RESPONSIVE_COMPACT_GRID_STYLE = {
     "grid_template_columns": "repeat(auto-fit, minmax(160px, 1fr))",
 }
+
+# Tokens resolved outside the per-section context: SectionNumber is injected
+# per-section by the legacy dynamic-heading path; ClauseNumber is resolved
+# document-wide by apply_clause_numbering(). Neither should be reported as a
+# missing token.
+DOCUMENT_LEVEL_TOKENS = {"SectionNumber", "ClauseNumber"}
+
+
+def _drop_document_level_tokens(tokens) -> list:
+    return [t for t in (tokens or []) if str(t) not in DOCUMENT_LEVEL_TOKENS]
 
 
 class LeasePackageSection(rx.Base):
@@ -1411,15 +1422,7 @@ class LeasePackageBuilderState(AppState):
             if not content:
                 continue
             validation = validate_template_tokens(content, context)
-            validation["missing"] = [
-                t for t in (validation.get("missing", []) or [])
-                if str(t) != "SectionNumber"
-            ]
-            validation["missing"] = [
-                t for t in (validation.get("missing", []) or [])
-                if str(t) != "SectionNumber"
-            ]
-            unresolved = validation.get("missing", []) or []
+            unresolved = _drop_document_level_tokens(validation.get("missing", []))
             if unresolved:
                 label = p.template_section_label or p.section_name
                 errors.append(f"{label}: " + ", ".join(sorted(set(unresolved))[:10]))
@@ -1498,6 +1501,20 @@ class LeasePackageBuilderState(AppState):
                 self.form_error = _format_actionable_errors("Fix these missing tokens before generating:", token_errors)
                 return
 
+            numbered_contents, unresolved_refs = apply_clause_numbering(
+                [
+                    str(p.content or "") if self._has_renderable_text(p) else ""
+                    for p in selected
+                ]
+            )
+            if unresolved_refs:
+                self.form_error = _format_actionable_errors(
+                    "Fix these clause cross-references before generating "
+                    "(no included clause defines this anchor):",
+                    unresolved_refs,
+                )
+                return
+
             pdf_paths_to_merge: list[str] = []
             rendered_content_by_template_section_id: dict[int, str] = {}
             rendered_content_by_section_id: dict[int, str] = {}
@@ -1517,7 +1534,7 @@ class LeasePackageBuilderState(AppState):
                 pending_text_sections.clear()
 
             for idx, p in enumerate(selected, start=1):
-                content = str(p.content or "").strip()
+                content = str(numbered_contents[idx - 1] or "").strip()
                 if self._has_renderable_text(p):
                     section_context = {**context, "SectionNumber": str(section_number)}
                     rendered_text, unresolved = render_text_template(content, section_context) if content else ("", [])
@@ -1679,6 +1696,20 @@ class LeasePackageBuilderState(AppState):
             tenant_id = self._selected_tenant_id()
             context = get_lease_merge_context(tenant_id=tenant_id, lease_id=self.selected_lease_id, db=self.db)
 
+            numbered_contents, unresolved_refs = apply_clause_numbering(
+                [
+                    str(s.content or "") if self._has_renderable_text(s) else ""
+                    for s in selected
+                ]
+            )
+            if unresolved_refs:
+                self.merge_error = _format_actionable_errors(
+                    "Preview blocked. Fix these clause cross-references "
+                    "(no included clause defines this anchor):",
+                    unresolved_refs,
+                )
+                return
+
             preview_sections = []
             section_number = 1
             all_unresolved: list[str] = []
@@ -1686,8 +1717,12 @@ class LeasePackageBuilderState(AppState):
 
             for idx, section in enumerate(selected, start=1):
                 label = section.template_section_label or section.section_name or f"Section {idx}"
-                content = str(section.content or "").strip()
-                header = f"--- {idx}. {label} [{section.section_type or 'Section'}] ---"
+                content = str(numbered_contents[idx - 1] or "").strip()
+                # Bracketed position index, not "N." -- the visible clause numbers
+                # are rendered inline from {{ClauseNumber}} and legitimately differ
+                # from this section index (headers/PDF sections take a slot with no
+                # number; one section can hold several numbered clauses).
+                header = f"--- [{idx}] {label} [{section.section_type or 'Section'}] ---"
 
                 if self._has_renderable_text(section):
                     section_context = {**context, "SectionNumber": str(section_number)}
@@ -2015,6 +2050,16 @@ class LeasePackageBuilderState(AppState):
                 self.regenerate_preview_error = "No included package sections were found for the selected generated package."
                 return
 
+            # Regeneration is snapshot-based: LeasePackageSections rows are frozen
+            # at generation, and clause numbers were already resolved to literals
+            # in ContentSnapshot then. Do NOT re-run apply_clause_numbering here --
+            # it can only see tokens still present, so with a mix of frozen
+            # snapshots and one hand-edited section it would misnumber. A manual
+            # edit that (re)introduces {{ClauseNumber}} is caught as an unresolved
+            # token below and blocks regeneration, which is the intended behavior:
+            # manual edits in the generated-section editor should use a literal
+            # number. To renumber, generate a fresh package.
+
             errors: list[str] = []
             lines: list[str] = []
             revised_count = 0
@@ -2138,6 +2183,12 @@ class LeasePackageBuilderState(AppState):
             if not rows:
                 self.form_error = "No included package sections were found for the selected generated package."
                 return
+
+            # Snapshot-based regeneration: clause numbers were resolved to
+            # literals in ContentSnapshot at generation time. Do NOT re-run
+            # apply_clause_numbering here (see the matching note in
+            # preview_regenerate_selected_generated_package). Generate a fresh
+            # package to renumber after inserting or reordering clauses.
 
             pdf_paths_to_merge: list[str] = []
             errors: list[str] = []
