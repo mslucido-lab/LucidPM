@@ -712,6 +712,8 @@ class WorkItemState(AppState):
             self.form_error = f"Save failed: {ex}"
 
     def mark_done(self):
+        self.form_error = ""
+        self.form_success = ""
         if not self.confirm_done:
             self.confirm_done = True
             return
@@ -721,7 +723,7 @@ class WorkItemState(AppState):
             # Check for open actions
             rows = run_query(
                 "SELECT COUNT(*) AS Cnt FROM WorkItemActions "
-                "WHERE WorkItemID = ? AND ActionStatus NOT IN ('Done','Canceled')",
+                "WHERE WorkItemID = ? AND ActionStatus NOT IN ('Done','Canceled','Cancelled')",
                 (int(self.selected_id),), db=db,
             )
             open_count = int(rows[0]["Cnt"]) if rows else 0
@@ -1361,13 +1363,9 @@ def _edit_form() -> rx.Component:
                              placeholder="How was this resolved?",
                              width="100%", rows="2")),
 
-            # Feedback
-            rx.cond(WorkItemState.form_error != "",
-                rx.callout(WorkItemState.form_error, icon="triangle_alert",
-                           color_scheme="red"), rx.fragment()),
-            rx.cond(WorkItemState.form_success != "",
-                rx.callout(WorkItemState.form_success, icon="check",
-                           color_scheme="green"), rx.fragment()),
+            # Feedback is rendered once at the top of _detail_panel() so it is
+            # visible in both edit mode and the read-only detail view (e.g. the
+            # "Cannot close — N open action(s) remain" message from mark_done).
 
             # Buttons
             rx.hstack(
@@ -1588,6 +1586,12 @@ def _bids_tab() -> rx.Component:
 
 def _detail_panel() -> rx.Component:
     return rx.vstack(
+        rx.cond(WorkItemState.form_error != "",
+            rx.callout(WorkItemState.form_error, icon="triangle_alert",
+                       color_scheme="red", width="100%"), rx.fragment()),
+        rx.cond(WorkItemState.form_success != "",
+            rx.callout(WorkItemState.form_success, icon="check",
+                       color_scheme="green", width="100%"), rx.fragment()),
         rx.cond(
             WorkItemState.edit_mode,
             _edit_form(),
