@@ -945,6 +945,21 @@ def _paragraph_for_block(block: str):
             return _markup_flowables(f"{marker} {rest}", LEASE_STYLES["ARTICLE_HEADER"])
         return _markup_flowables(marker, LEASE_STYLES["ARTICLE_HEADER"])
 
+    # A single fully-wrapped <para ...> element renders as ONE Paragraph: an
+    # internal <br/> is a line break, not a paragraph separator. Splitting it
+    # here would re-apply the opening tag -- including any bulletText -- to every
+    # fragment, so e.g. an amendment clause authored as
+    #   <para bulletText="{{ClauseNumber}}.">intro<br/>...<br/>tail</para>
+    # would print its clause number once per fragment. Multi-<para> blocks and
+    # non-<para> <br/> content fall through to the split handling below.
+    _single_para = clean.strip()
+    if (
+        _single_para.lower().startswith("<para")
+        and _single_para.lower().count("<para") == 1
+        and re.search(r"</para>\s*$", _single_para, re.IGNORECASE)
+    ):
+        return _markup_flowables(clean, LEASE_STYLES["CLAUSE_BODY"])
+
     # Treat authored <br/> tags as body paragraph breaks only after header
     # detection. This preserves the lease header/jurisdiction behavior from
     # v1.5.26 while fixing body clauses that use <br/> for paragraph breaks.
