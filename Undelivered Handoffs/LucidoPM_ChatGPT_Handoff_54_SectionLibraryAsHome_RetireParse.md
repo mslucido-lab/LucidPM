@@ -176,8 +176,36 @@ A create flow living in the Library's right panel. Reuses Parse's backend; only 
         form does not wipe it. (Copy just the SELECT + the
         selected_source_path / selected_source_page_count / f_property /
         f_document_category assignments out of select_source_document; skip
-        everything from the 'reset the parse/edit form' comment onward.)"""
+        everything from the 'reset the parse/edit form' comment onward.)
+
+        Page range IS source-specific, so clamp/initialize it here (one code
+        path — initializes on first attach, clamps on a source switch;
+        everything else in the form is preserved):
+            pc = self.selected_source_page_count or 1
+            try: s = int(self.p_start_page or 0)
+            except ValueError: s = 0
+            try: e = int(self.p_end_page or 0)
+            except ValueError: e = 0
+            s = min(max(s or 1, 1), pc)
+            e = min(max(e or pc, s), pc)
+            self.p_start_page, self.p_end_page = str(s), str(e)
+        """
         ...
+
+    # Source-doc select options — LeaseSourceDocuments has no ready label/id
+    # pair; build one (template names alone can collide).
+    @rx.var
+    def source_doc_labels(self) -> list[str]:
+        out = ["(standalone — no source)"]
+        for r in self.source_documents:
+            prop = str(r.property_name or "").strip() or "General"
+            out.append(f"{r.template_name} · {prop} · ID {r.source_document_id}")
+        return out
+
+    @rx.var
+    def source_doc_ids(self) -> list[int]:
+        return [0] + [int(r.source_document_id) for r in self.source_documents]
+        # set_new_section_source resolves the picked label -> id via these lists.
 
     def start_new_section(self, mode: str = "text"):
         self.reset_section_form()                 # clears editing_section_id + p_*
@@ -237,7 +265,8 @@ A create flow living in the Library's right panel. Reuses Parse's backend; only 
           self.select_library_section(new_id)   # open the new section in the Library editor
           self.form_success = "Section created."
   ```
-- It still reads `selected_source_document_id` for the source link. Ensure `set_new_section_source` populated `selected_source_document_id` (via `_select_source_for_create`) so `has_source_document` is true for PDF mode. Standalone text: `new_section_source_id == 0` → `p_is_standalone_clause = True` → `has_source_document` false → INSERT with `LeaseSourceDocumentID = NULL`.
+- It still reads `selected_source_document_id` for the source link. Ensure `set_new_section_source` populated `selected_source_document_id` (via `_load_source_context`) so `has_source_document` is true for PDF mode. Standalone text: `new_section_source_id == 0` → `p_is_standalone_clause = True` → `has_source_document` false → INSERT with `LeaseSourceDocumentID = NULL`.
+- Also parameterize `_save_text_clause_section` (~2019): its INSERT hardcodes `IsReusable, IsActive` to `1, 1` — take `reusable`/`active` args (from the shared bulk toggles) instead.
 
 Nothing else in `create_section` changes — the exhibit rules, `split_pdf_pages`, path handling all stay.
 
@@ -255,11 +284,12 @@ rx.segmented_control.root(
 )
 ```
 
-- **Common fields** (all three modes): Internal name, Section type, Exhibit code, Article #, Display label, Clause tag, Reusable/Active — same widgets as `_library_edit_body` Phase 1B, bound to the same `p_*` vars.
-- **Attach to source document** (all modes, optional): `rx.select` over `source_documents` labels + a "(standalone — no source)" option → `set_new_section_source`. Default standalone.
-- **Text clause** mode: content `rx.text_area(id="lease-clause-content-textarea", value=p_content, ...)` + `_available_token_buttons_panel("lease-clause-content-textarea")` + "Create section" → `create_section`.
-- **From PDF** mode: require a source doc; Start page / End page inputs (`p_start_page`/`p_end_page`); show the source's page count; "Split & create" → `create_section`.
-- **Bulk paste-split** mode: move the entire "Paste-and-split clause tool" card body here verbatim — `paste_clause_text` textarea, "Split Pasted Text" → `parse_pasted_clauses`, the `draft_clauses` table (`draft_clause_row`), "Save All Draft Clauses" → `save_all_draft_clauses`, "Clear". These handlers already write standalone-or-source-linked text sections based on `selected_source_document_id`/`p_is_standalone_clause`, which `set_new_section_source` now controls. After "Save All", set `library_create_mode = ""` and refresh.
+- **Attach to source document** (all modes, optional): `rx.select` over `source_doc_labels`, resolve label → id via `source_doc_ids`, → `set_new_section_source`. Default `"(standalone — no source)"` (id 0).
+- **Shared for all modes:** Section type + Reusable/Active (`p_section_type`, `p_is_reusable`, `p_is_active`).
+- **Text clause** and **From PDF** modes additionally show the per-section metadata (Internal name, Exhibit code, Article #, Display label, Clause tag) — same widgets as `_library_edit_body` Phase 1B, bound to the same `p_*` vars.
+  - Text clause: content `rx.text_area(id="lease-clause-content-textarea", value=p_content, ...)` + `_available_token_buttons_panel("lease-clause-content-textarea")` + "Create section" → `create_section`.
+  - From PDF: require a source doc; Start page / End page inputs (`p_start_page`/`p_end_page`, clamped by `_load_source_context`); show the source's page count; "Split & create" → `create_section`.
+- **Bulk paste-split** mode: **no per-section metadata fields** — each parsed draft keeps its own derived name / article / display label / clause tag. Move the "Paste-and-split clause tool" card body here verbatim — `paste_clause_text` textarea, "Split Pasted Text" → `parse_pasted_clauses`, the `draft_clauses` table (`draft_clause_row`, its per-row Load → `load_draft_clause`, which now also sets `library_create_mode = "text"` so the clause opens in the text editor), "Save All Draft Clauses" → `save_all_draft_clauses` (passes the shared `p_is_reusable`/`p_is_active` through to `_save_text_clause_section`), "Clear". Source link is whatever `set_new_section_source` set. After "Save All", set `library_create_mode = ""` and refresh.
 - Footer: "Cancel" → `cancel_new_section`.
 
 ### 2D. Wire into `_tab_library()`
@@ -322,7 +352,7 @@ rx.segmented_control.root(
 
 | What | Why |
 |---|---|
-| `_find_clause_markers`, `_parse_clause_header`, `_clean_clause_label`, `_slug_from_label`, `_save_text_clause_section` | Move the *call sites'* UI, not the parsing. Reimplementing the heuristics is a regression risk with no upside. |
+| `_find_clause_markers`, `_parse_clause_header`, `_clean_clause_label`, `_slug_from_label` (the parsing heuristics) | Move the *call sites'* UI, not the parsing. Reimplementing the heuristics is a regression risk with no upside. (`_save_text_clause_section` gets one signature change — reusable/active args — nothing else.) |
 | `split_pdf_pages` and the storage-path logic in `create_section` | PDF splitting is unchanged. |
 | `LeaseDocumentSections` schema / `SortOrder` / `StartPage` / `EndPage` semantics | No new columns; page range and sort order are create-time only. |
 | `edit_section` | Still the loader; just called from more places (Library + Load's per-source table). |
