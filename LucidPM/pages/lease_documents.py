@@ -253,6 +253,10 @@ SECTION_CREATION_MODES = ["PDF Page Split", "Text Clause"]
 
 PROPERTY_GENERAL = "General / All Properties"
 
+# page_shell's content box is a flex child, so this page needs an explicit
+# viewport-relative width to avoid shrinking to the selected tab's contents.
+FULL_PAGE_WIDTH = "calc(100vw - var(--lucid-sidebar-width, 220px) - 64px)"
+
 
 def _safe_int(value, default: int = 0) -> int:
     """Convert DB/Reflex values to int without Decimal/float/string quirks."""
@@ -1631,22 +1635,59 @@ class LeaseDocumentState(AppState):
     def save_section_content(self):
         self.form_error = ""
         self.form_success = ""
-        if int(self.editing_section_id or 0) <= 0:
-            self.form_error = "Select a section with Edit before saving content."
+        sid = int(self.editing_section_id or 0)
+        if sid <= 0:
+            self.form_error = "Select a section with Edit before saving."
             return
+        name = str(self.p_section_name or "").strip()
+        if not name:
+            self.form_error = "Section name is required."
+            return
+        sect_type = self.p_section_type if self.p_section_type in SECTION_TYPES else "Base Lease"
+        code = str(self.p_exhibit_code or "").strip()
+        if sect_type == "Base Lease":
+            code = ""
         try:
+            if code and sect_type == "Exhibit":
+                src_rows = run_query(
+                    "SELECT LeaseSourceDocumentID FROM LeaseDocumentSections "
+                    "WHERE LeaseDocumentSectionID = ?",
+                    (sid,),
+                    db=self.db,
+                )
+                src_id = int(src_rows[0].get("LeaseSourceDocumentID") or 0) if src_rows else 0
+                if src_id:
+                    dup = run_query(
+                        "SELECT TOP 1 LeaseDocumentSectionID FROM LeaseDocumentSections "
+                        "WHERE LeaseSourceDocumentID = ? AND SectionType = 'Exhibit' "
+                        "AND UPPER(ISNULL(ExhibitCode,'')) = UPPER(?) "
+                        "AND LeaseDocumentSectionID <> ?",
+                        (src_id, code, sid),
+                        db=self.db,
+                    )
+                    if dup:
+                        self.form_error = "This exhibit code already exists for that source document."
+                        return
             run_exec(
-                "UPDATE LeaseDocumentSections SET ClauseTag=?, ArticleNumber=?, DisplayLabel=?, Content=?, UpdatedOn=SYSDATETIME() WHERE LeaseDocumentSectionID = ?",
+                "UPDATE LeaseDocumentSections SET SectionName=?, SectionType=?, ExhibitCode=?, "
+                "ClauseTag=?, ArticleNumber=?, DisplayLabel=?, Content=?, UpdatedOn=SYSDATETIME() "
+                "WHERE LeaseDocumentSectionID = ?",
                 (
-                    self.p_clause_tag.strip() or None,
-                    self.p_article_number.strip() or None,
-                    self.p_display_label.strip() or None,
+                    name,
+                    sect_type,
+                    code or None,
+                    str(self.p_clause_tag or "").strip() or None,
+                    str(self.p_article_number or "").strip() or None,
+                    str(self.p_display_label or "").strip() or None,
                     self.p_content,
-                    int(self.editing_section_id),
+                    sid,
                 ),
                 db=self.db,
             )
-            self.form_success = "Section content saved."
+            self.p_section_name = name
+            self.p_section_type = sect_type
+            self.p_exhibit_code = code
+            self.form_success = "Section saved."
             self._load_sections()
             self._load_all_sections()
             self._load_reusable_section_options()
@@ -3819,7 +3860,7 @@ def _library_view_body() -> rx.Component:
         rx.grid(
             rx.vstack(rx.text("Article number", size="1", color="#666"), rx.text(rx.cond(LeaseDocumentState.p_article_number != "", LeaseDocumentState.p_article_number, "—"), size="2", weight="bold"), spacing="1"),
             rx.vstack(rx.text("Display label", size="1", color="#666"), rx.text(rx.cond(LeaseDocumentState.p_display_label != "", LeaseDocumentState.p_display_label, "—"), size="2", weight="bold"), spacing="1"),
-            rx.vstack(rx.text("Internal name", size="1", color="#666"), rx.text(LeaseDocumentState.p_section_name, size="2"), spacing="1"),
+            rx.vstack(rx.text("Section name", size="1", color="#666"), rx.text(LeaseDocumentState.p_section_name, size="2"), spacing="1"),
             columns="3",
             spacing="3",
             width="100%",
@@ -3827,16 +3868,27 @@ def _library_view_body() -> rx.Component:
         rx.text("Content", size="1", color="#666"),
         rx.box(
             rx.text(rx.cond(LeaseDocumentState.p_content != "", LeaseDocumentState.p_content, "This section has no text content (PDF-only or header-only)."), size="1", color="#333"),
-            style={"background": "#ffffff", "border": "1px solid #e1e5ee", "border_radius": "8px", "padding": "12px", "width": "100%", "max_height": "420px", "overflow": "auto", "font_family": "monospace", "white_space": "pre-wrap"},
+            style={"background": "#ffffff", "border": "1px solid #e1e5ee", "border_radius": "8px", "padding": "12px", "width": "100%", "flex": "1", "min_height": "240px", "overflow": "auto", "font_family": "monospace", "white_space": "pre-wrap"},
         ),
         spacing="3",
         width="100%",
+        height="100%",
+        flex="1",
+        min_height="0",
         align_items="start",
     )
 
 
 def _library_edit_body() -> rx.Component:
     return rx.vstack(
+        rx.grid(
+            rx.vstack(rx.text("Section name", size="1", color="#666"), rx.input(value=LeaseDocumentState.p_section_name, on_change=LeaseDocumentState.set_p_section_name, width="100%"), spacing="1"),
+            rx.vstack(rx.text("Section type", size="1", color="#666"), rx.select(SECTION_TYPES, value=LeaseDocumentState.p_section_type, on_change=LeaseDocumentState.set_p_section_type, width="100%"), spacing="1"),
+            rx.vstack(rx.text("Exhibit code", size="1", color="#666"), rx.input(value=LeaseDocumentState.p_exhibit_code, on_change=LeaseDocumentState.set_p_exhibit_code, placeholder="A", width="100%"), spacing="1"),
+            columns="3",
+            spacing="3",
+            width="100%",
+        ),
         rx.grid(
             rx.vstack(rx.text("Article number", size="1", color="#666"), rx.input(value=LeaseDocumentState.p_article_number, on_change=LeaseDocumentState.set_p_article_number, placeholder="4 or A", width="100%"), spacing="1"),
             rx.vstack(rx.text("Display label", size="1", color="#666"), rx.input(value=LeaseDocumentState.p_display_label, on_change=LeaseDocumentState.set_p_display_label, placeholder="Holdover Tenancy", width="100%"), spacing="1"),
@@ -3912,6 +3964,7 @@ def _tab_library() -> rx.Component:
                 rx.cond(LeaseDocumentState.library_detail_mode == "edit", _library_edit_body(), _library_view_body()),
                 spacing="4",
                 width="100%",
+                height="100%",
             ),
             rx.box(rx.text("Select a section from the list to view or edit it.", size="2", color="#888"), style={"padding": "24px"}),
         ),
@@ -3986,7 +4039,11 @@ def lease_documents_content() -> rx.Component:
         rx.cond(LeaseDocumentState.admin_lease_tab == "load", _tab_load()),
 
         spacing="4",
-        width="100%",
+        width=FULL_PAGE_WIDTH,
+        min_width=FULL_PAGE_WIDTH,
+        max_width=FULL_PAGE_WIDTH,
+        flex_shrink="0",
+        style={"box_sizing": "border-box", "overflow_x": "hidden"},
     )
 
 
