@@ -374,6 +374,9 @@ class LeaseDocumentState(AppState):
     library_sort_desc: bool = False
     # Section Library list/detail: view is read-only; edit shows the existing form.
     library_detail_mode: str = "view"
+    # Section Library creation panel: "" | "text" | "pdf" | "bulk".
+    library_create_mode: str = ""
+    new_section_source_id: int = 0
 
     # Paste-and-split clause tool
     paste_clause_text: str = ""
@@ -543,6 +546,27 @@ class LeaseDocumentState(AppState):
         if str(row.updated_on or "").strip():
             parts.append(f"Updated {row.updated_on}")
         return "  ·  ".join(parts)
+
+    @rx.var
+    def source_doc_labels(self) -> list[str]:
+        labels = ["(standalone — no source)"]
+        for row in self.source_documents:
+            prop = str(row.property_name or "").strip() or "General"
+            labels.append(f"{row.template_name} · {prop} · ID {row.source_document_id}")
+        return labels
+
+    @rx.var
+    def source_doc_ids(self) -> list[int]:
+        return [0] + [int(row.source_document_id) for row in self.source_documents]
+
+    @rx.var
+    def selected_new_section_source_label(self) -> str:
+        source_id = int(self.new_section_source_id or 0)
+        ids = self.source_doc_ids
+        labels = self.source_doc_labels
+        if source_id in ids:
+            return labels[ids.index(source_id)]
+        return labels[0]
 
     @rx.var
     def filtered_library_sections(self) -> list[SectionRow]:
@@ -1047,6 +1071,111 @@ class LeaseDocumentState(AppState):
         else:
             self.sections = []
 
+    def _load_source_context(self, source_id: int):
+        """Load source metadata for Library creation without clearing form fields."""
+        rows = run_query(
+            "SELECT PropertyID, DocumentCategory, StoredFilePath, PageCount "
+            "FROM LeaseSourceDocuments WHERE LeaseSourceDocumentID = ?",
+            (int(source_id),),
+            db=self.db,
+        )
+        if not rows:
+            self.form_error = "Source document not found."
+            return
+        row = rows[0]
+        self.selected_source_path = str(row.get("StoredFilePath") or "")
+        try:
+            self.selected_source_page_count = int(row.get("PageCount") or 0)
+        except (TypeError, ValueError):
+            self.selected_source_page_count = 0
+        self.f_property = self._property_name_for_id(row.get("PropertyID"))
+        self.f_document_category = str(row.get("DocumentCategory") or "Base Lease")
+
+        page_count_value = self.selected_source_page_count or 1
+        try:
+            start = int(self.p_start_page or 0)
+        except (TypeError, ValueError):
+            start = 0
+        try:
+            end = int(self.p_end_page or 0)
+        except (TypeError, ValueError):
+            end = 0
+        start = min(max(start or 1, 1), page_count_value)
+        end = min(max(end or page_count_value, start), page_count_value)
+        self.p_start_page = str(start)
+        self.p_end_page = str(end)
+
+    def start_new_section(self, mode: str = "text"):
+        self.reset_section_form()
+        self.paste_clause_text = ""
+        self.draft_clauses = []
+        self.draft_clause_count = "0 draft clause(s)"
+        self.library_detail_mode = "view"
+        self.library_create_mode = mode if mode in {"text", "pdf", "bulk"} else "text"
+        self.new_section_source_id = 0
+        self.selected_source_document_id = 0
+        self.selected_source_page_count = 0
+        self.selected_source_path = ""
+        self.p_start_page = ""
+        self.p_end_page = ""
+        self.p_creation_mode = "PDF Page Split" if self.library_create_mode == "pdf" else "Text Clause"
+        self.p_is_standalone_clause = True
+        self.p_sort_order = "10"
+        self.form_error = ""
+        self.form_success = ""
+
+    def set_library_create_mode(self, mode: str):
+        next_mode = mode if mode in {"text", "pdf", "bulk"} else "text"
+        self.library_create_mode = next_mode
+        self.p_creation_mode = "PDF Page Split" if next_mode == "pdf" else "Text Clause"
+        if next_mode == "pdf" and self.new_section_source_id > 0:
+            self._load_source_context(self.new_section_source_id)
+
+    def set_new_section_source(self, value: str):
+        selected_value = str(value or "")
+        labels = self.source_doc_labels
+        ids = self.source_doc_ids
+        if selected_value in labels:
+            source_id = int(ids[labels.index(selected_value)])
+        else:
+            try:
+                source_id = int(selected_value or 0)
+            except (TypeError, ValueError):
+                source_id = 0
+        self.new_section_source_id = source_id
+        self.selected_source_document_id = source_id
+        self.p_is_standalone_clause = source_id <= 0
+        if source_id > 0:
+            self._load_source_context(source_id)
+        else:
+            self.selected_source_page_count = 0
+            self.selected_source_path = ""
+        self.p_sort_order = str(self._next_section_sort_order())
+
+    def cancel_new_section(self):
+        self.library_create_mode = ""
+        self.new_section_source_id = 0
+        self.selected_source_document_id = 0
+        self.selected_source_page_count = 0
+        self.selected_source_path = ""
+        self.reset_section_form()
+
+    def start_new_section_from_source(self, source_id: int):
+        sid = int(source_id or 0)
+        self.reset_section_form()
+        self.paste_clause_text = ""
+        self.draft_clauses = []
+        self.draft_clause_count = "0 draft clause(s)"
+        self.library_detail_mode = "view"
+        self.library_create_mode = "pdf"
+        self.p_creation_mode = "PDF Page Split"
+        self.p_start_page = ""
+        self.p_end_page = ""
+        self.set_new_section_source(str(sid))
+        self.admin_lease_tab = "library"
+        self.form_error = ""
+        self.form_success = ""
+
     def select_source_document(self, source_document_id: int):
         self.selected_source_document_id = int(source_document_id)
         self.form_error = ""
@@ -1478,6 +1607,7 @@ class LeaseDocumentState(AppState):
 
     def select_library_section(self, section_id: int):
         """Select a Library section and show its read-only detail."""
+        self.library_create_mode = ""
         self.edit_section(section_id)
         self.library_detail_mode = "view"
 
@@ -1742,15 +1872,20 @@ class LeaseDocumentState(AppState):
         except Exception as ex:
             self.form_error = f"Could not copy from snapshot: {ex}"
 
+
+
+    # ── Paste-and-split clause tool ───────────────────────────────────────────
+
     def create_section(self):
+        """Create one new text-backed or PDF-split section."""
         self.form_error = ""
         self.form_success = ""
         is_text_clause = self.p_creation_mode == "Text Clause"
         has_source_document = int(self.selected_source_document_id or 0) > 0 and not bool(self.p_is_standalone_clause)
         if not has_source_document and not is_text_clause:
-            self.form_error = "Select a source document on the Load tab first, or switch to Text Clause mode for a standalone clause."
+            self.form_error = "Choose a source document in the + New section form before splitting a PDF."
             return
-        if not self.p_section_name.strip():
+        if not str(self.p_section_name or "").strip():
             self.form_error = "Section name is required."
             return
         try:
@@ -1765,8 +1900,6 @@ class LeaseDocumentState(AppState):
             self.form_error = "Start page, end page, and sort order must be numbers."
             return
 
-        current_edit_id = int(self.editing_section_id or 0)
-
         if is_text_clause:
             if has_source_document and (start < 1 or end < start or end > self.selected_source_page_count):
                 self.form_error = f"Source page reference must be between 1 and {self.selected_source_page_count}."
@@ -1775,30 +1908,26 @@ class LeaseDocumentState(AppState):
             if not str(self.p_content or "").strip() and not has_heading_metadata:
                 self.form_error = "Content is required for Text Clause mode unless Article Number or Display Label is supplied for a header-only section."
                 return
-        else:
-            metadata_only_update = self._is_metadata_only_section_update(current_edit_id, start, end)
-            if not self._validate_section_range(start, end, current_edit_id, require_non_overlap=not metadata_only_update):
-                return
+        elif not self._validate_section_range(start, end, 0, require_non_overlap=True):
+            return
 
-        code = self.p_exhibit_code.strip()
-        if self.p_section_type == "Base Lease":
+        section_type = self.p_section_type if self.p_section_type in SECTION_TYPES else "Base Lease"
+        code = str(self.p_exhibit_code or "").strip()
+        if section_type == "Base Lease":
             code = ""
-            if not self.p_section_name.strip():
-                self.p_section_name = "Base Lease"
-        if has_source_document and self.p_section_type == "Exhibit" and code:
+        if has_source_document and section_type == "Exhibit" and code:
             dup = run_query(
                 "SELECT TOP 1 LeaseDocumentSectionID AS SectionID FROM LeaseDocumentSections "
                 "WHERE LeaseSourceDocumentID = ? AND SectionType = 'Exhibit' "
-                "AND UPPER(ISNULL(ExhibitCode,'')) = UPPER(?) AND LeaseDocumentSectionID <> ?",
-                (self.selected_source_document_id, code, current_edit_id), db=self.db,
+                "AND UPPER(ISNULL(ExhibitCode,'')) = UPPER(?)",
+                (self.selected_source_document_id, code), db=self.db,
             )
             if dup:
                 self.form_error = "This exhibit code already exists for the selected source document."
                 return
         try:
-            if not code and self.p_section_type == "Exhibit":
+            if not code and section_type == "Exhibit":
                 code = self._next_exhibit_code()
-
             root = self.storage_root.strip() or DEFAULT_DOCUMENT_ROOT
             if is_text_clause:
                 section_path = (str(self.selected_source_path or "").strip() or None) if has_source_document else None
@@ -1810,87 +1939,40 @@ class LeaseDocumentState(AppState):
                     f"{slugify(self.p_section_name)}_p{start}_{end}.pdf"
                 )
                 section_path = split_pdf_pages(
-                    self.selected_source_path,
-                    start,
-                    end,
-                    output_name,
-                    self.storage_root,
-                    self.f_property,
-                    self.f_document_category,
+                    self.selected_source_path, start, end, output_name,
+                    self.storage_root, self.f_property, self.f_document_category,
                 )
                 rel = relative_to_root(section_path, root)
-
-            if current_edit_id:
-                old_rows = run_query(
-                    "SELECT StoredFilePath FROM LeaseDocumentSections WHERE LeaseDocumentSectionID = ?",
-                    (current_edit_id,), db=self.db,
-                )
-                old_path = str(old_rows[0].get("StoredFilePath") or "") if old_rows else ""
-                run_exec(
-                    "UPDATE LeaseDocumentSections SET SectionType=?, SectionName=?, ExhibitCode=?, StartPage=?, EndPage=?, "
-                    "StoredFilePath=?, StorageRoot=?, RelativePath=?, SortOrder=?, IsReusable=?, IsActive=?, "
-                    "ClauseTag=?, ArticleNumber=?, DisplayLabel=?, Content=?, UpdatedOn=SYSDATETIME() "
-                    "WHERE LeaseDocumentSectionID=?",
-                    (
-                        self.p_section_type, self.p_section_name.strip(), code or None,
-                        start, end, section_path, root, rel, sort_order,
-                        1 if self.p_is_reusable else 0, 1 if self.p_is_active else 0,
-                        self.p_clause_tag.strip() or None,
-                        self.p_article_number.strip() or None,
-                        self.p_display_label.strip() or None,
-                        self.p_content, current_edit_id,
-                    ), db=self.db,
-                )
-                if (not is_text_clause) and old_path and old_path != section_path and os.path.isfile(old_path):
-                    try:
-                        os.remove(old_path)
-                    except OSError:
-                        pass
-                self.form_success = "Text clause updated." if is_text_clause else "Section updated."
-                self.editing_section_id = 0
-            else:
-                run_exec(
-                    "INSERT INTO LeaseDocumentSections "
-                    "(LeaseSourceDocumentID, LeaseID, SectionType, SectionName, ExhibitCode, StartPage, EndPage, "
-                    "StoredFilePath, StorageRoot, RelativePath, SortOrder, IsReusable, IsActive, ClauseTag, ArticleNumber, DisplayLabel, Content, UpdatedOn) "
-                    "VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, SYSDATETIME())",
-                    (
-                        self.selected_source_document_id if has_source_document else None, self.p_section_type,
-                        self.p_section_name.strip(), code or None, start, end,
-                        section_path, root, rel, sort_order,
-                        1 if self.p_is_reusable else 0, 1 if self.p_is_active else 0,
-                        self.p_clause_tag.strip() or None,
-                        self.p_article_number.strip() or None,
-                        self.p_display_label.strip() or None,
-                        self.p_content,
-                    ), db=self.db,
-                )
-                self.form_success = "Text clause saved." if is_text_clause else "Section saved."
-
-            if is_text_clause:
-                self.p_sort_order = str(self._next_section_sort_order())
-            else:
-                next_page = end + 1
-                self.p_start_page = str(next_page) if next_page <= self.selected_source_page_count else str(end)
-                self.p_end_page = str(next_page) if next_page <= self.selected_source_page_count else str(end)
-                self.p_sort_order = str(self._next_section_sort_order())
-
-            self.p_section_name = ""
-            self.p_exhibit_code = ""
-            self.p_clause_tag = ""
-            self.p_article_number = ""
-            self.p_display_label = ""
-            self.p_content = ""
-            self.p_is_reusable = True
-            self.p_is_active = True
+            run_exec(
+                "INSERT INTO LeaseDocumentSections "
+                "(LeaseSourceDocumentID, LeaseID, SectionType, SectionName, ExhibitCode, StartPage, EndPage, "
+                "StoredFilePath, StorageRoot, RelativePath, SortOrder, IsReusable, IsActive, ClauseTag, ArticleNumber, DisplayLabel, Content, UpdatedOn) "
+                "VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, SYSDATETIME())",
+                (
+                    self.selected_source_document_id if has_source_document else None,
+                    section_type, str(self.p_section_name or "").strip(), code or None,
+                    start, end, section_path, root, rel, sort_order,
+                    1 if self.p_is_reusable else 0, 1 if self.p_is_active else 0,
+                    str(self.p_clause_tag or "").strip() or None,
+                    str(self.p_article_number or "").strip() or None,
+                    str(self.p_display_label or "").strip() or None,
+                    self.p_content,
+                ), db=self.db,
+            )
+            id_rows = run_query(
+                "SELECT TOP 1 LeaseDocumentSectionID FROM LeaseDocumentSections ORDER BY LeaseDocumentSectionID DESC",
+                db=self.db,
+            )
+            new_id = int(id_rows[0].get("LeaseDocumentSectionID") or 0) if id_rows else 0
             self._load_sections()
             self._load_all_sections()
             self._load_reusable_section_options()
+            self.library_create_mode = ""
+            if new_id > 0:
+                self.select_library_section(new_id)
+            self.form_success = "Section created."
         except Exception as ex:
-            self.form_error = f"Could not save section: {ex}"
-
-
-    # ── Paste-and-split clause tool ───────────────────────────────────────────
+            self.form_error = f"Could not create section: {ex}"
 
     def _slug_from_label(self, label: str) -> str:
         text = str(label or "").strip().lower()
@@ -2040,14 +2122,14 @@ class LeaseDocumentState(AppState):
             if int(draft.draft_id or 0) == did:
                 self.editing_section_id = 0
                 self.p_creation_mode = "Text Clause"
-                self.p_section_type = self.library_type_filter if self.library_type_filter in SECTION_TYPES else "Base Lease"
+                self.library_create_mode = "text"
+                if self.p_section_type not in SECTION_TYPES:
+                    self.p_section_type = "Base Lease"
                 self.p_section_name = draft.display_label
                 self.p_exhibit_code = ""
                 self.p_start_page = "1"
                 self.p_end_page = "1"
                 self.p_sort_order = str(self._next_section_sort_order())
-                self.p_is_reusable = True
-                self.p_is_active = True
                 self.p_clause_tag = draft.clause_tag
                 self.p_article_number = draft.article_number
                 self.p_display_label = draft.display_label
@@ -2057,7 +2139,7 @@ class LeaseDocumentState(AppState):
                 return
         self.form_error = "Draft clause not found."
 
-    def _save_text_clause_section(self, draft: DraftClauseRow) -> int:
+    def _save_text_clause_section(self, draft: DraftClauseRow, reusable: bool, active: bool) -> int:
         has_source_document = int(self.selected_source_document_id or 0) > 0 and not bool(self.p_is_standalone_clause)
         source_path = (str(self.selected_source_path or "").strip() or None) if has_source_document else None
         root = self.storage_root.strip() or DEFAULT_DOCUMENT_ROOT
@@ -2082,7 +2164,7 @@ class LeaseDocumentState(AppState):
             "INSERT INTO LeaseDocumentSections "
             "(LeaseSourceDocumentID, LeaseID, SectionType, SectionName, ExhibitCode, StartPage, EndPage, "
             "StoredFilePath, StorageRoot, RelativePath, SortOrder, IsReusable, IsActive, ClauseTag, ArticleNumber, DisplayLabel, Content, UpdatedOn) "
-            "VALUES (?, NULL, ?, ?, NULL, ?, ?, ?, ?, NULL, ?, 1, 1, ?, ?, ?, ?, SYSDATETIME())",
+            "VALUES (?, NULL, ?, ?, NULL, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, SYSDATETIME())",
             (
                 int(self.selected_source_document_id) if has_source_document else None,
                 self.p_section_type if self.p_section_type in SECTION_TYPES else "Base Lease",
@@ -2092,6 +2174,8 @@ class LeaseDocumentState(AppState):
                 source_path,
                 root,
                 sort_order,
+                1 if reusable else 0,
+                1 if active else 0,
                 str(draft.clause_tag or "").strip() or None,
                 str(draft.article_number or "").strip() or None,
                 str(draft.display_label or "").strip() or None,
@@ -2117,7 +2201,7 @@ class LeaseDocumentState(AppState):
             self.form_error = "Draft clause not found."
             return
         try:
-            new_id = self._save_text_clause_section(draft)
+            new_id = self._save_text_clause_section(draft, self.p_is_reusable, self.p_is_active)
             self.form_success = f"Saved draft clause as section #{new_id}."
             self._load_sections()
             self._load_all_sections()
@@ -2137,12 +2221,13 @@ class LeaseDocumentState(AppState):
         saved = 0
         try:
             for draft in self.draft_clauses:
-                self._save_text_clause_section(draft)
+                self._save_text_clause_section(draft, self.p_is_reusable, self.p_is_active)
                 saved += 1
             self.form_success = f"Saved {saved:,} draft clause(s)."
             self._load_sections()
             self._load_all_sections()
             self._load_reusable_section_options()
+            self.library_create_mode = ""
         except Exception as ex:
             self.form_error = f"Saved {saved:,} clause(s), then failed: {ex}"
 
@@ -2164,7 +2249,7 @@ class LeaseDocumentState(AppState):
             content=self.p_content,
         )
         try:
-            new_id = self._save_text_clause_section(draft)
+            new_id = self._save_text_clause_section(draft, self.p_is_reusable, self.p_is_active)
             self.form_success = f"Saved loaded draft as section #{new_id}."
             self._load_sections()
             self._load_all_sections()
@@ -3921,11 +4006,197 @@ def _library_edit_body() -> rx.Component:
     )
 
 
+def _library_create_mode_buttons() -> rx.Component:
+    return rx.hstack(
+        rx.button("Text clause", on_click=LeaseDocumentState.set_library_create_mode("text"), variant=rx.cond(LeaseDocumentState.library_create_mode == "text", "solid", "soft"), color_scheme="blue"),
+        rx.button("From PDF", on_click=LeaseDocumentState.set_library_create_mode("pdf"), variant=rx.cond(LeaseDocumentState.library_create_mode == "pdf", "solid", "soft"), color_scheme="blue"),
+        rx.button("Bulk paste-split", on_click=LeaseDocumentState.set_library_create_mode("bulk"), variant=rx.cond(LeaseDocumentState.library_create_mode == "bulk", "solid", "soft"), color_scheme="blue"),
+        spacing="2",
+        wrap="wrap",
+    )
+
+
+def _library_create_metadata_fields() -> rx.Component:
+    return rx.vstack(
+        rx.grid(
+            rx.vstack(rx.text("Section name", size="1", color="#666"), rx.input(value=LeaseDocumentState.p_section_name, on_change=LeaseDocumentState.set_p_section_name, placeholder="Article 3 - Rent", width="100%"), spacing="1"),
+            rx.vstack(rx.text("Exhibit code", size="1", color="#666"), rx.input(value=LeaseDocumentState.p_exhibit_code, on_change=LeaseDocumentState.set_p_exhibit_code, placeholder="A", width="100%"), spacing="1"),
+            columns="2",
+            spacing="3",
+            width="100%",
+        ),
+        rx.grid(
+            rx.vstack(rx.text("Article number", size="1", color="#666"), rx.input(value=LeaseDocumentState.p_article_number, on_change=LeaseDocumentState.set_p_article_number, placeholder="4 or A", width="100%"), spacing="1"),
+            rx.vstack(rx.text("Display label", size="1", color="#666"), rx.input(value=LeaseDocumentState.p_display_label, on_change=LeaseDocumentState.set_p_display_label, placeholder="Holdover Tenancy", width="100%"), spacing="1"),
+            rx.vstack(rx.text("Clause tag", size="1", color="#666"), rx.input(value=LeaseDocumentState.p_clause_tag, on_change=LeaseDocumentState.set_p_clause_tag, placeholder="holdover", width="100%"), spacing="1"),
+            columns="3",
+            spacing="3",
+            width="100%",
+        ),
+        spacing="3",
+        width="100%",
+    )
+
+
+def _library_create_text_body() -> rx.Component:
+    return rx.vstack(
+        _library_create_metadata_fields(),
+        rx.hstack(
+            rx.text("Clause content", size="1", color="#666"),
+            rx.spacer(),
+            rx.badge(LeaseDocumentState.section_content_character_count, color_scheme="purple", variant="soft"),
+            width="100%",
+            align="center",
+        ),
+        rx.text_area(
+            id="lease-clause-content-textarea",
+            value=LeaseDocumentState.p_content,
+            on_change=LeaseDocumentState.set_p_content,
+            placeholder="Paste or type the clause text here.",
+            width="100%",
+            height="240px",
+        ),
+        rx.box(
+            _available_token_buttons_panel("lease-clause-content-textarea"),
+            style={"width": "100%", "max_height": "260px", "overflow_y": "auto"},
+        ),
+        rx.box(
+            rx.text("Tokens detected in this clause", size="1", weight="bold", color="#555"),
+            rx.text(LeaseDocumentState.detected_section_tokens, size="1", color="#666"),
+            style={"background": "#f8f9fc", "border": "1px solid #e1e5ee", "border_radius": "8px", "padding": "10px", "width": "100%"},
+        ),
+        rx.button("Create section", on_click=LeaseDocumentState.create_section, color_scheme="blue"),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _library_create_pdf_body() -> rx.Component:
+    return rx.vstack(
+        _library_create_metadata_fields(),
+        rx.cond(
+            LeaseDocumentState.new_section_source_id > 0,
+            rx.callout.root(
+                rx.callout.text("Selected source has " + LeaseDocumentState.selected_source_page_count.to_string() + " pages."),
+                color_scheme="blue",
+                width="100%",
+            ),
+            rx.callout.root(rx.callout.text("Choose a source document before splitting pages."), color_scheme="amber", width="100%"),
+        ),
+        rx.grid(
+            rx.vstack(rx.text("Start page", size="1", color="#666"), rx.input(value=LeaseDocumentState.p_start_page, on_change=LeaseDocumentState.set_p_start_page, width="100%"), spacing="1"),
+            rx.vstack(rx.text("End page", size="1", color="#666"), rx.input(value=LeaseDocumentState.p_end_page, on_change=LeaseDocumentState.set_p_end_page, width="100%"), spacing="1"),
+            columns="2",
+            spacing="3",
+            width="100%",
+        ),
+        rx.button("Split & create", on_click=LeaseDocumentState.create_section, color_scheme="blue", disabled=LeaseDocumentState.new_section_source_id <= 0),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _library_create_bulk_body() -> rx.Component:
+    return rx.vstack(
+        rx.hstack(
+            rx.text("Paste-and-split clause tool", size="3", weight="bold", color=BRAND_DARK),
+            rx.spacer(),
+            rx.badge(LeaseDocumentState.draft_clause_count, color_scheme="purple", variant="soft"),
+            width="100%",
+            align="center",
+        ),
+        rx.text("Paste lease article text to derive each draft's section name, article number, display label, and clause tag.", size="2", color="#666"),
+        rx.text_area(
+            value=LeaseDocumentState.paste_clause_text,
+            on_change=LeaseDocumentState.set_paste_clause_text,
+            placeholder="Paste clause text here. Example: 4. Holdover Tenancy\nFailure of Tenant to surrender...",
+            width="100%",
+            height="180px",
+        ),
+        rx.hstack(
+            rx.text(LeaseDocumentState.paste_clause_character_count, size="1", color="#666"),
+            rx.spacer(),
+            rx.button("Split Pasted Text", on_click=LeaseDocumentState.parse_pasted_clauses, color_scheme="purple"),
+            rx.button("Save All Draft Clauses", on_click=LeaseDocumentState.save_all_draft_clauses, variant="soft", color_scheme="green"),
+            rx.button("Clear", on_click=LeaseDocumentState.clear_pasted_clause_tool, variant="soft", color_scheme="gray"),
+            width="100%",
+            align="center",
+            spacing="3",
+            wrap="wrap",
+        ),
+        rx.cond(
+            LeaseDocumentState.has_draft_clauses,
+            rx.box(
+                rx.table.root(
+                    rx.table.header(rx.table.row(rx.table.column_header_cell("Article"), rx.table.column_header_cell("Display label"), rx.table.column_header_cell("Clause tag"), rx.table.column_header_cell("Preview"), rx.table.column_header_cell("Actions"))),
+                    rx.table.body(rx.foreach(LeaseDocumentState.draft_clauses, draft_clause_row)),
+                    width="100%",
+                ),
+                style={"width": "100%", "overflow_x": "auto"},
+            ),
+            rx.text("No draft clauses yet.", size="2", color="#888"),
+        ),
+        spacing="3",
+        width="100%",
+        align_items="start",
+    )
+
+
+def _library_create_body() -> rx.Component:
+    return rx.vstack(
+        rx.hstack(
+            rx.text("New section", size="4", weight="bold", color=BRAND_DARK),
+            rx.spacer(),
+            rx.button("Cancel", on_click=LeaseDocumentState.cancel_new_section, variant="soft", color_scheme="gray"),
+            width="100%",
+            align="center",
+        ),
+        _library_create_mode_buttons(),
+        rx.divider(),
+        rx.vstack(
+            rx.text("Attach to source document", size="1", color="#666"),
+            rx.select(
+                LeaseDocumentState.source_doc_labels,
+                value=LeaseDocumentState.selected_new_section_source_label,
+                on_change=LeaseDocumentState.set_new_section_source,
+                width="100%",
+            ),
+            spacing="1",
+            width="100%",
+        ),
+        rx.grid(
+            rx.vstack(rx.text("Section type", size="1", color="#666"), rx.select(SECTION_TYPES, value=LeaseDocumentState.p_section_type, on_change=LeaseDocumentState.set_p_section_type, width="100%"), spacing="1"),
+            rx.vstack(
+                rx.text("Flags", size="1", color="#666"),
+                rx.hstack(
+                    rx.checkbox("Reusable", checked=LeaseDocumentState.p_is_reusable, on_change=LeaseDocumentState.set_p_is_reusable),
+                    rx.checkbox("Active", checked=LeaseDocumentState.p_is_active, on_change=LeaseDocumentState.set_p_is_active),
+                    spacing="3",
+                ),
+                spacing="1",
+            ),
+            columns="2",
+            spacing="3",
+            width="100%",
+        ),
+        rx.cond(
+            LeaseDocumentState.library_create_mode == "text",
+            _library_create_text_body(),
+            rx.cond(LeaseDocumentState.library_create_mode == "pdf", _library_create_pdf_body(), _library_create_bulk_body()),
+        ),
+        spacing="4",
+        width="100%",
+        align_items="start",
+    )
+
+
 def _tab_library() -> rx.Component:
     left_panel = rx.box(
         rx.vstack(
             rx.hstack(rx.text("Section Library", size="3", weight="bold", color=BRAND_DARK), rx.spacer(), rx.badge(LeaseDocumentState.library_result_count, color_scheme="blue", variant="soft"), width="100%", align="center"),
-            rx.button("New Standalone Clause", on_click=LeaseDocumentState.new_standalone_clause, size="1", variant="soft", color_scheme="green", width="100%"),
+            rx.button("+ New section", on_click=LeaseDocumentState.start_new_section("text"), size="1", variant="soft", color_scheme="green", width="100%"),
             rx.input(value=LeaseDocumentState.library_search, on_change=LeaseDocumentState.set_library_search, placeholder="Search name, label, tag, source, content", width="100%"),
             rx.grid(
                 rx.vstack(rx.text("Type", size="1", color="#666"), rx.select(["All"] + SECTION_TYPES, value=LeaseDocumentState.library_type_filter, on_change=LeaseDocumentState.set_library_type_filter, width="100%"), spacing="1"),
@@ -3958,15 +4229,19 @@ def _tab_library() -> rx.Component:
     )
     right_panel = rx.box(
         rx.cond(
-            LeaseDocumentState.editing_section_id > 0,
-            rx.vstack(
-                _library_header_bar(),
-                rx.cond(LeaseDocumentState.library_detail_mode == "edit", _library_edit_body(), _library_view_body()),
-                spacing="4",
-                width="100%",
-                height="100%",
+            LeaseDocumentState.library_create_mode != "",
+            _library_create_body(),
+            rx.cond(
+                LeaseDocumentState.editing_section_id > 0,
+                rx.vstack(
+                    _library_header_bar(),
+                    rx.cond(LeaseDocumentState.library_detail_mode == "edit", _library_edit_body(), _library_view_body()),
+                    spacing="4",
+                    width="100%",
+                    height="100%",
+                ),
+                rx.box(rx.text("Select a section from the list, or click + New section.", size="2", color="#888"), style={"padding": "24px"}),
             ),
-            rx.box(rx.text("Select a section from the list to view or edit it.", size="2", color="#888"), style={"padding": "24px"}),
         ),
         style={"flex": "1", "min_width": "0", "overflow": "auto", "height": "calc(100vh - 260px)"},
     )
