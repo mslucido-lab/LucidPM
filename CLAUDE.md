@@ -66,11 +66,12 @@ Old versions are **archived, not deleted** — kept browsable in `Archived Versi
 
 *(Updated in place each session — not appended to. For deeper history, use `git log` or browse `Completed Handoffs/`.)*
 
-**As of 2026-08-29.**
+**As of 2026-08-30.**
 
-### Active thread — Merge-token catalog
+### Queued — two handoffs written, neither started, Mark to sequence
 
-Making merge tokens data-driven so adding a simple one is a table row, not a code change across two files. Grounded analysis + agreed design in the `project_token_catalog_idea` memory; full backlog entry below. **Decisions locked (2026-08-29):** whitelisted source-objects (no SQL from data), standalone `/admin/merge-tokens` page, ship P1 (resolver + picker, no admin UI) → verify against a real package generation → then P2 (admin page). Next step: write the P1 handoff (55).
+- **Handoff 55 — Merge-token catalog P1** (`Undelivered Handoffs/`, committed `0756799`). Data-driven merge tokens: `dbo.MergeTokenCatalog` table, `field` tokens resolve generically from a whitelisted source-object + fixed format enum (no SQL from data), `computed` tokens stay Python but get catalogued, the picker reads the table. P1 = table + seed reproducing today's ~121 tokens + resolver + picker, no admin UI; verify a package generation is byte-identical. P2 = `/admin/merge-tokens` page. Decisions locked 2026-08-29 (see `project_token_catalog_idea` memory + backlog below).
+- **Handoff 56 — Retire the Load tab** (`Undelivered Handoffs/`, committed `4d34fe5`). End state two tabs (Package Templates · Section Library). Source PDFs become a switchable view inside the Library (list / upload / metadata / coverage). The frequent path — one formatted page (signature block etc.) → one section — collapses to upload-name-split in the From-PDF create mode; revising it is a "Replace PDF" button on the section. 3 phases, one file (`lease_documents.py`), one commit each. Design discussion with Mark 2026-08-30 (see `project_load_tab_retire` memory).
 
 ### Prior thread (shipped) — Lease Template admin redesign ("Studio")
 
