@@ -561,7 +561,11 @@ class LeaseDocumentState(AppState):
                 group = str(row.active or "").lower()
             else:
                 group = ""
-            if self.library_sort_by == "Display Label":
+            if self.library_sort_by == "Section Name":
+                main = str(row.section_name or "").lower()
+            elif self.library_sort_by == "Group":
+                main = group
+            elif self.library_sort_by == "Display Label":
                 main = str(row.display_label or row.section_name or "").lower()
             elif self.library_sort_by == "Updated On":
                 main = str(row.updated_on or "")
@@ -3529,30 +3533,31 @@ def _library_list_item(row: SectionRow) -> rx.Component:
             rx.cond(LeaseDocumentState.library_group_by == "Active Status", row.active, ""),
         ),
     )
-    return rx.box(
-        rx.vstack(
-            rx.text(row.section_name, size="2", weight="bold", color=BRAND_DARK),
-            rx.hstack(
-                rx.cond(group_value != "", rx.badge(group_value, color_scheme="gray", variant="soft"), rx.fragment()),
-                rx.cond(
-                    row.content_status == "Yes",
-                    rx.badge("Text", color_scheme="purple", variant="soft"),
-                    rx.badge("PDF", color_scheme="gray", variant="soft"),
-                ),
-                rx.cond(row.active == "No", rx.badge("Inactive", color_scheme="gray", variant="soft"), rx.fragment()),
-                spacing="1",
-                wrap="wrap",
-            ),
-            spacing="1",
-            align_items="start",
-            width="100%",
-        ),
+    return rx.grid(
+        rx.text(row.section_name, size="2", weight="medium", color=BRAND_DARK, title=row.section_name, style={"overflow": "hidden", "text_overflow": "ellipsis", "white_space": "nowrap"}),
+        rx.text(rx.cond(group_value != "", group_value, "—"), size="1", color="#555", title=group_value, style={"overflow": "hidden", "text_overflow": "ellipsis", "white_space": "nowrap"}),
+        rx.text(rx.cond(row.clause_tag != "", row.clause_tag, "—"), size="1", color="#555", title=row.clause_tag, style={"overflow": "hidden", "text_overflow": "ellipsis", "white_space": "nowrap"}),
+        columns="minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr)",
+        spacing="2",
+        align="center",
         on_click=LeaseDocumentState.select_library_section(row.section_id),
         style=rx.cond(
             LeaseDocumentState.editing_section_id == row.section_id,
-            {"background": "#f0f4ff", "border": "1px solid #c5d0f0", "border_left": f"4px solid {BRAND_PRIMARY}", "border_radius": "10px", "padding": "9px 11px", "width": "100%", "cursor": "pointer"},
-            {"background": "white", "border": "1px solid #e5e7eb", "border_left": "4px solid transparent", "border_radius": "10px", "padding": "9px 11px", "width": "100%", "cursor": "pointer"},
+            {"background": "#f0f4ff", "border_bottom": "1px solid #dbe3f5", "border_left": f"3px solid {BRAND_PRIMARY}", "padding": "8px 8px", "width": "100%", "cursor": "pointer"},
+            {"background": "white", "border_bottom": "1px solid #e5e7eb", "border_left": "3px solid transparent", "padding": "8px 8px", "width": "100%", "cursor": "pointer", "_hover": {"background": "#f8fafc"}},
         ),
+    )
+
+
+def _library_list_header() -> rx.Component:
+    return rx.grid(
+        rx.text("Section", size="1", weight="bold", color="#555"),
+        rx.text("Group", size="1", weight="bold", color="#555"),
+        rx.text("Tag", size="1", weight="bold", color="#555"),
+        columns="minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr)",
+        spacing="2",
+        width="100%",
+        style={"background": "#f8fafc", "border_bottom": "1px solid #cbd5e1", "padding": "7px 8px"},
     )
 
 
@@ -3869,16 +3874,17 @@ def _tab_library() -> rx.Component:
                 rx.vstack(rx.text("Active", size="1", color="#666"), rx.select(["All", "Yes", "No"], value=LeaseDocumentState.library_status_filter, on_change=LeaseDocumentState.set_library_status_filter, width="100%"), spacing="1"),
                 rx.vstack(rx.text("Tag status", size="1", color="#666"), rx.select(["All", "Tagged", "Untagged"], value=LeaseDocumentState.library_tag_filter, on_change=LeaseDocumentState.set_library_tag_filter, width="100%"), spacing="1"),
                 rx.vstack(rx.text("Group by", size="1", color="#666"), rx.select(["Clause Tag", "Section Type", "Active Status", "None"], value=LeaseDocumentState.library_group_by, on_change=LeaseDocumentState.set_library_group_by, width="100%"), spacing="1"),
-                rx.vstack(rx.text("Sort by", size="1", color="#666"), rx.select(["Article Number", "Display Label", "Updated On", "Clause Tag", "Source Document"], value=LeaseDocumentState.library_sort_by, on_change=LeaseDocumentState.set_library_sort_by, width="100%"), spacing="1"),
+                rx.vstack(rx.text("Sort by", size="1", color="#666"), rx.select(["Section Name", "Group", "Article Number", "Display Label", "Updated On", "Clause Tag", "Source Document"], value=LeaseDocumentState.library_sort_by, on_change=LeaseDocumentState.set_library_sort_by, width="100%"), spacing="1"),
                 rx.vstack(rx.text("Direction", size="1", color="#666"), rx.checkbox("Descending", checked=LeaseDocumentState.library_sort_desc, on_change=LeaseDocumentState.set_library_sort_desc), spacing="1"),
                 columns="2",
                 spacing="2",
                 width="100%",
             ),
             rx.divider(),
+            _library_list_header(),
             rx.cond(
                 LeaseDocumentState.filtered_library_sections.length() > 0,
-                rx.vstack(rx.foreach(LeaseDocumentState.filtered_library_sections, _library_list_item), spacing="2", width="100%"),
+                rx.vstack(rx.foreach(LeaseDocumentState.filtered_library_sections, _library_list_item), spacing="0", width="100%"),
                 rx.text("No sections match the current filters.", size="2", color="#888"),
             ),
             spacing="3",
