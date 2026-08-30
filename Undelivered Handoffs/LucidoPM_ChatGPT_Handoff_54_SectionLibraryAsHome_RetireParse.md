@@ -347,13 +347,13 @@ rx.segmented_control.root(
 - **`_library_create_metadata_fields` grouping (from review F5, nit).** Section type + Reusable/Active sit in the shared block above the mode body, but Exhibit code sits *inside* `_library_create_metadata_fields` with name/article/label/tag. Move Section type down next to Exhibit code (both are per-section, not per-batch), or leave it — cosmetic only, ship either way.
 
 ### Phase 3 checklist
-- [ ] No "Parse & Section" tab. Three tabs, all render.
-- [ ] Load → "Split / Add Section" and a card's "Split ->" both land in the Library with `+ New section` open in From-PDF mode, source preselected.
-- [ ] Load's per-source Edit → opens that section in the Library.
-- [ ] `grep -n "_tab_parse\|go_to_parse_tab\|parse_save_button_label\|_is_metadata_only_section_update" lease_documents.py` → nothing but comments.
-- [ ] From PDF: cut range 1–3, "Split & create" → section created, form **stays** in From-PDF mode with source kept and range advanced to 4–end; cut 4–6 → second section created. (F3)
-- [ ] Text / bulk create still navigate to the new section / clear the panel.
-- [ ] All 17 pages compile; `reflex run --backend-only` clean.
+- [x] No "Parse & Section" tab. Three tabs, all render.
+- [x] Load → "Split / Add Section" and a card's "Split ->" both land in the Library with `+ New section` open in From-PDF mode, source preselected.
+- [x] Load's per-source Edit → opens that section in the Library.
+- [x] `grep -n "_tab_parse\|go_to_parse_tab\|parse_save_button_label\|_is_metadata_only_section_update" lease_documents.py` → nothing but comments.
+- [~] From PDF: cut range 1–3, "Split & create" → section created, form **stays** in From-PDF mode with source kept and range advanced; cut next → second section created. (F3) — **code verified by review; live path blocked by stale source-PDF root, deferred to manual check (see follow-ups below).**
+- [x] Text / bulk create still navigate to the new section / clear the panel.
+- [x] Compiles; `import LucidPM.LucidPM` builds the app clean; live `reflex run` console clean.
 
 ---
 
@@ -388,9 +388,15 @@ rx.segmented_control.root(
 
 - **Phase 1 — done** (`d09cc1c`). Also folded in a Mark-requested full-width page fix (`FULL_PAGE_WIDTH` on `lease_documents_content()`).
 - **Phase 2 — done** (`bdbc01c`), reviewed. Both P1/P2 verified in a live `reflex run`, console clean.
-- **Phase 3 — this is what's left**: 3A–3D above. Section 3D carries three review follow-ups (F3 = PDF batch-split flow, the one real behaviour change; F4/F5 nits).
+- **Phase 3 — done**, committed. 3A–3D all implemented: `_tab_parse` deleted, Load tab rewired to `start_new_section_from_source` / `open_section_in_library`, dead code stripped (grep-clean of all functional refs), F3 PDF batch-split "keep open + advance range" landed, F4 `save_loaded_draft_as_section` now navigates to the new section. Claude-reviewed in a live `reflex run` — compiles/imports clean, console clean apart from the pre-existing `UNSAFE_componentWillMount` strict-mode warning.
 
-Per `CLAUDE.md`: edit `lease_documents.py` in place. **One commit per phase.** The `_vN` archive move for `lease_documents*` / `lease_documents_pdf*` / `pages/LeaseDocuments History/` is still pending from Handoff 53 — do it as its own commit after Phase 3 verifies.
+### Phase 3 review — deferred follow-ups (tracked in `CLAUDE.md` Standing backlog)
+
+1. **Manual verification of the F3 batch-split advance path** — blocked locally by the stale `C:\Dell Inspirion\...` source-PDF root (TOP-PRIORITY backlog item); `split_pdf_pages` throws `[Errno 2]`, so only the failure branch is verified (form stays put, range does not advance). Click through one real batch split in the app after the local path/junction is restored.
+2. **Dead-code nits** — `SECTION_CREATION_MODES` (~line 252) and `set_p_creation_mode` (~line 2859) are orphaned (zero live refs); several header/inline comments still name the Parse tab (~lines 38-43, 85, 90, 161, 188-191, 364, 1327). Safe deletes; fold into a later touch of the file.
+3. **F3 end-of-document UX wart** — when a batch split consumes the last page, the next range becomes `N`-`N` and still says "next range ready"; the next split then fails with a page-overlap error. Follow-up: when no free pages remain, show "Source fully split" and navigate away like text mode.
+
+Per `CLAUDE.md`: edit `lease_documents.py` in place. **One commit per phase.** The `_vN` archive move for `lease_documents*` / `pages/LeaseDocuments History/` is still pending from Handoff 53 — next housekeeping step, its own commit.
 
 ---
 
