@@ -93,7 +93,7 @@ Reworking the `/admin/lease-templates` page (four tabs: Load / Parse & Section /
 - **DDL trigger to auto-populate `dbo.SchemaChangeLog`** on both DBs — captures executed T-SQL via `EVENTDATA()`. Would close the gap the `db/history/` reorg had to work around. Needs documenting in `docs/Database.md` + a decision on the now-redundant manual `INSERT INTO SchemaChangeLog` lines in `db/history/` scripts.
 - **Handoff 45** — narrow `_standalone_state()` in `LucidPM.py` to the required ancestor chain. Written, in `Undelivered Handoffs/`, never implemented.
 - **Property Financials Analytics DB-toggle chart bug** — switching tabs after toggling to Production shows chart data that looks like Test data (sidebar banner stays correct). Unreproduced / uninstrumented; no handoff yet.
-- **`_vN` archive cleanup for the lease-template files** — `lease_documents_v*.py`, `lease_documents_pdf_v*.py`, `pages/LeaseDocuments History/` → `Archived Versions/`. Owed since Handoff 53 (incremental per the File Versioning policy — do it once 54 lands).
+- **`_vN` archive cleanup — `lease_documents.py` only.** Its `pages/lease_documents_v*.py` siblings + `pages/LeaseDocuments History/` (~150 files) → `Archived Versions/`. Held deliberately until Handoff 54 Phase 3 lands (the file is mid-refactor). `lease_documents_pdf`, `work_items`, and the `lease_merge` stragglers were archived 2026-08-29 (`9ed280c`); `lease_package_builder` earlier (`d186d83`).
 - Automated tests, CI, VS Code workspace config.
 - **Azure POC** — paused: CLI installed, no subscription yet. Next: Mark creates a subscription in the portal, then resume at POC-A (`az login`, create `Lucido-Apps-RG`). Full plan in `Undelivered Handoffs/Azure Planning`.
 
