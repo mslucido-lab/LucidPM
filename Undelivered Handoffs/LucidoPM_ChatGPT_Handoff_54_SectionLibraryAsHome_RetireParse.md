@@ -336,14 +336,23 @@ rx.segmented_control.root(
 - `go_to_parse_tab`, `detach_current_clause_from_source`.
 - Computed vars: `is_text_clause_mode`, `parse_mode_help_text`, `parse_save_button_label`, `parse_page_label`, `parse_end_page_label`, `will_save_without_source_document`, `selected_source_summary`.
 - `new_standalone_clause` — repoint its body to `start_new_section("text")` + `set_tab("library")`, or delete it and its button.
+- **`_is_metadata_only_section_update` (~1506)** — became dead when the `create_section` UPDATE branch was removed in Phase 2. Confirm no other caller, then delete it. (`_validate_section_range` is still used — keep.)
 - `reset_section_form`'s `self.admin_lease_tab` references — none; leave it.
-- Keep: `create_section`, `_save_text_clause_section`, all `_parse_*`/`_find_clause_markers`/`_clean_clause_label`/`_slug_from_label` helpers, `parse_pasted_clauses`, `save_all_draft_clauses`, `save_draft_clause`, `load_draft_clause`, `clear_pasted_clause_tool`, `DraftClauseRow`, `draft_clause_row`, `section_row`, `p_creation_mode`, `p_start_page`/`p_end_page`, `p_is_standalone_clause`, `has_source_document`.
+- Keep: `create_section`, `_save_text_clause_section`, all `_parse_*`/`_find_clause_markers`/`_clean_clause_label`/`_slug_from_label` helpers, `parse_pasted_clauses`, `save_all_draft_clauses`, `save_draft_clause`, `load_draft_clause`, `clear_pasted_clause_tool`, `DraftClauseRow`, `draft_clause_row`, `section_row`, `p_creation_mode`, `p_start_page`/`p_end_page`, `p_is_standalone_clause`, `has_source_document`, `_validate_section_range`.
+
+### 3D. Phase 1/2 review follow-ups
+
+- **PDF batch-split flow (from review F3).** After a successful `create_section`, Phase 2 always navigates to the new section's editor (`library_create_mode = ""` + `select_library_section(new_id)`). That's right for **text** and **bulk** modes, but it forces a full `+ New section → From PDF → re-pick source` for every range when cutting one PDF into many sections. **For PDF mode only:** on success, keep `library_create_mode = "pdf"`, keep the source selected, clear the per-section metadata (`p_section_name` / `p_exhibit_code` / `p_article_number` / `p_display_label` / `p_clause_tag` / `p_content`), advance the range (`start = min(end + 1, page_count)`, `end = page_count`, or `end` if already at the end), bump `p_sort_order` via `_next_section_sort_order()`, and show `form_success` = "Section N created — next range ready." Text/bulk behavior is unchanged.
+- **`save_loaded_draft_as_section` (from review F4)** — unlike `save_all_draft_clauses`, it doesn't clear `library_create_mode` or navigate; you're left in the `"text"` create form with the just-saved content still in it. On success, either `select_library_section(new_id)` (consistent with `create_section`) or at least clear the form. Pick one and match `create_section`.
+- **`_library_create_metadata_fields` grouping (from review F5, nit).** Section type + Reusable/Active sit in the shared block above the mode body, but Exhibit code sits *inside* `_library_create_metadata_fields` with name/article/label/tag. Move Section type down next to Exhibit code (both are per-section, not per-batch), or leave it — cosmetic only, ship either way.
 
 ### Phase 3 checklist
 - [ ] No "Parse & Section" tab. Three tabs, all render.
 - [ ] Load → "Split / Add Section" and a card's "Split ->" both land in the Library with `+ New section` open in From-PDF mode, source preselected.
 - [ ] Load's per-source Edit → opens that section in the Library.
-- [ ] `grep -n "_tab_parse\|go_to_parse_tab\|parse_save_button_label" lease_documents.py` → nothing but comments.
+- [ ] `grep -n "_tab_parse\|go_to_parse_tab\|parse_save_button_label\|_is_metadata_only_section_update" lease_documents.py` → nothing but comments.
+- [ ] From PDF: cut range 1–3, "Split & create" → section created, form **stays** in From-PDF mode with source kept and range advanced to 4–end; cut 4–6 → second section created. (F3)
+- [ ] Text / bulk create still navigate to the new section / clear the panel.
 - [ ] All 17 pages compile; `reflex run --backend-only` clean.
 
 ---
@@ -375,9 +384,13 @@ rx.segmented_control.root(
 
 ---
 
-## How to Deliver
+## Status / How to Deliver
 
-Per `CLAUDE.md`: edit `lease_documents.py` in place. **One commit per phase** (so Mark verifies between): `"Phase 1: full field set in the Section Library editor"`, `"Phase 2: + New section in the Section Library"`, `"Phase 3: retire the Parse & Section tab"`. The `_vN` archive move for `lease_documents*` is still pending from Handoff 53 — do it as its own commit after Phase 3 verifies.
+- **Phase 1 — done** (`d09cc1c`). Also folded in a Mark-requested full-width page fix (`FULL_PAGE_WIDTH` on `lease_documents_content()`).
+- **Phase 2 — done** (`bdbc01c`), reviewed. Both P1/P2 verified in a live `reflex run`, console clean.
+- **Phase 3 — this is what's left**: 3A–3D above. Section 3D carries three review follow-ups (F3 = PDF batch-split flow, the one real behaviour change; F4/F5 nits).
+
+Per `CLAUDE.md`: edit `lease_documents.py` in place. **One commit per phase.** The `_vN` archive move for `lease_documents*` / `lease_documents_pdf*` / `pages/LeaseDocuments History/` is still pending from Handoff 53 — do it as its own commit after Phase 3 verifies.
 
 ---
 
