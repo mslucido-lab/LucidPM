@@ -66,10 +66,11 @@ Old versions are **archived, not deleted** — kept browsable in `Archived Versi
 
 *(Updated in place each session — not appended to. For deeper history, use `git log` or browse `Completed Handoffs/`.)*
 
-**As of 2026-08-30.**
+**As of 2026-09-01.**
 
-### Queued — two handoffs written, neither started, Mark to sequence
+### Queued — three handoffs written, none started, Mark to sequence
 
+- **Handoff 57 — Suite Rent PSF tab** (`Undelivered Handoffs/`, committed `<pending>`). New "Suite Rent" tab on Property Financials Analytics: per-suite in-place annual rent PSF vs the suite's underwriting rent PSF, with the property's SquareFeet-weighted avg as a benchmark line, plus a numbers table. Metric = `monthly rent × 12 ÷ SquareFeet` (both `Leases.RentAmount` and `PropertySuites.UnderwritingRent` are monthly — mirrors `rent_roll.py`). One file (`property_financials_analytics.py`), read-only, no schema. Reuses the `rent_roll.find_lease` suite→lease matching cascade. Design + write-up this session.
 - **Handoff 55 — Merge-token catalog P1** (`Undelivered Handoffs/`, committed `0756799`). Data-driven merge tokens: `dbo.MergeTokenCatalog` table, `field` tokens resolve generically from a whitelisted source-object + fixed format enum (no SQL from data), `computed` tokens stay Python but get catalogued, the picker reads the table. P1 = table + seed reproducing today's ~121 tokens + resolver + picker, no admin UI; verify a package generation is byte-identical. P2 = `/admin/merge-tokens` page. Decisions locked 2026-08-29 (see `project_token_catalog_idea` memory + backlog below).
 - **Handoff 56 — Retire the Load tab** (`Undelivered Handoffs/`, committed `4d34fe5`). End state two tabs (Package Templates · Section Library). Source PDFs become a switchable view inside the Library (list / upload / metadata / coverage). The frequent path — one formatted page (signature block etc.) → one section — collapses to upload-name-split in the From-PDF create mode; revising it is a "Replace PDF" button on the section. 3 phases, one file (`lease_documents.py`), one commit each. Design discussion with Mark 2026-08-30 (see `project_load_tab_retire` memory).
 
@@ -86,7 +87,11 @@ Reworked the `/admin/lease-templates` page so the two heavily-used modules (Pack
 - **Deferred out of 54 (decided earlier):** editing a PDF section's page range (delete + recreate; a "re-cut" action later), Sort order in the editor, further Load-tab changes.
 - **Deferred from Phase 3 review (see backlog):** manual in-app check of the F3 batch-split advance path; two trivial dead-code nits; one F3 end-of-document UX wart.
 
-### Recently shipped (all committed + pushed, in `Completed Handoffs/`)
+### Recently shipped (committed; not pushed unless noted)
+
+- **Income Split chart rework (`6cc1c6f`, this session, Mark-verified on dev).** `income_split_chart()` in `property_financials_analytics.py` now reads as a composition chart: left axis "Opex % of Revenue" (0–100, builds up), right axis "NOI % of Revenue" reversed (reads down from 100%), one dashed line at the shared 40%-Opex / 60%-NOI mark (replaced the old meaningless `y=60` line). A hidden `_scale` bar bound to the right axis + `include_hidden=True` is what makes the right-axis ticks and the reference line render (a right YAxis with no series draws nothing). Axis domain reverted from `dataMin-5/dataMax+5` to `[0, 100]`. Then `ce1ca75` archived the 20 `property_financials_analytics_v*.py` siblings.
+
+### Older shipped (all committed + pushed, in `Completed Handoffs/`)
 
 - **Handoff 52 — dynamic clause numbering.** `{{ClauseNumber}}` / `{{ClauseNumber:Anchor}}` / `{{ClauseRef:Anchor}}` tokens resolved document-wide by `lease_merge.apply_clause_numbering` before normal token rendering. Authoring rule: put `{{ClauseNumber}}` **inside a `bulletText` attribute**, not as bare leading text (bare `{{ClauseNumber}}. Body` → the renderer bolds the whole line). Prod `TenantCRM` Section Library rows 46/47/49/50 migrated via `db/data_updates/`. **Do not activate the inactive Option section (row 41)** — still on legacy `{{SectionNumber}}` with an independent counter; it would misnumber until migrated to `{{ClauseNumber:Option}}`. Regeneration is snapshot-based and does not renumber (generate a fresh package). Cross-reference only anchors guaranteed to be in the package — an excluded/undefined anchor hard-blocks generation.
 - Renderer fix: a single fully-wrapped `<para>` with an internal `<br/>` now renders as one Paragraph (was splitting and re-applying `bulletText` → duplicate clause numbers).
