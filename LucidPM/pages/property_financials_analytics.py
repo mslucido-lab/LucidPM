@@ -606,24 +606,72 @@ def income_split_chart() -> rx.Component:
                 stack_id="1",
             ),
             rx.recharts.x_axis(data_key="year"),
+            # Left axis — Opex %, read bottom-to-top (red builds up from 0).
             rx.recharts.y_axis(
-                domain=["dataMin - 5", "dataMax + 5"],
+                domain=[0, 100],
+                ticks=[0, 20, 40, 60, 80, 100],
                 unit="%",
+                label={
+                    "value": "Opex % of Revenue",
+                    "angle": -90,
+                    "position": "insideLeft",
+                    "style": {"textAnchor": "middle"},
+                },
+            ),
+            # Right axis — NOI %, reversed so it reads top-to-bottom (green
+            # grows down from 100%). The stack always totals 100%, so the
+            # red/green boundary reads as Opex on the left and NOI on the right.
+            # `noi_pct` is also bound to this axis via a transparent line below
+            # so Recharts actually builds the scale (ticks + reference line).
+            rx.recharts.y_axis(
+                y_axis_id="right",
+                orientation="right",
+                reversed=True,
+                domain=[0, 100],
+                ticks=[20, 40, 60, 80, 100],
+                include_hidden=True,
+                unit="%",
+                label={
+                    "value": "NOI % of Revenue",
+                    "angle": 90,
+                    "position": "insideRight",
+                    "style": {"textAnchor": "middle"},
+                },
+            ),
+            # Invisible scale anchor: binds data to the right axis (hidden, so no
+            # layout impact) so its ticks render. include_hidden above lets it
+            # still drive the scale.
+            rx.recharts.bar(
+                data_key="noi_pct",
+                name="_scale",
+                y_axis_id="right",
+                fill="transparent",
+                stroke="transparent",
+                hide=True,
+                legend_type="none",
+                is_animation_active=False,
             ),
             rx.recharts.cartesian_grid(stroke_dasharray="3 3", vertical=False),
             rx.recharts.graphing_tooltip(),
             rx.recharts.legend(),
+            # One line, two readings: NOI 60% floor == Opex 40% ceiling. Keyed to
+            # the left (Opex) axis at 40 so it always renders; on the reversed
+            # right axis the same line sits at the "60" mark.
             rx.recharts.reference_line(
-                y=60,
+                rx.recharts.label(
+                    value="60% NOI target  /  40% Opex",
+                    position="insideTopLeft",
+                    style={"fill": "#1F4E79", "fontSize": "11px"},
+                ),
+                y=40,
                 stroke="#1F4E79",
                 stroke_dasharray="4 2",
                 stroke_width=2.0,
-                label="60%",
             ),
             data=PropertyFinancialsAnalyticsState.income_split_chart_data,
             width="100%",
             height=320,
-            margin={"top": 10, "right": 30, "left": 10, "bottom": 0},
+            margin={"top": 10, "right": 40, "left": 20, "bottom": 0},
         )
     )
 
