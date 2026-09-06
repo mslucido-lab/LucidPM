@@ -40,6 +40,11 @@ __pycache__/
 *.csv
 findstr.txt
 
+# Azure-migration DB dumps and working scripts at the repo db/ root —
+# generated from local SQL Server, contain tenant PII. Never commit.
+# (db/history/*.sql and db/baseline_schema.sql are unaffected.)
+/db/TenantCRM*.sql
+
 # Editor and OS metadata
 .vscode/
 .idea/
