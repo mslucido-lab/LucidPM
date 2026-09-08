@@ -1,6 +1,6 @@
 # LucidoPM — ChatGPT Handoff 58
 *Env-driven SQL connection + SQL-auth branch (Azure Migration Stage 0.3)*
-*Prepared: 2026-09-06 · revised 2026-09-06 (toggle stays in cloud) · revised 2026-09-07 (reconciled with the PM cloud-migration knowledge share: contained-user note, LUCIDPM_ENV marker, cold-resume gate, .dockerignore forward-ref)*
+*Prepared: 2026-09-06 · revised 2026-09-06 (toggle stays in cloud) · revised 2026-09-07 (reconciled with the PM cloud-migration knowledge share: contained-user note, LUCIDPM_ENV marker, cold-resume gate, .dockerignore forward-ref) · revised 2026-09-07 pt.2 (Codex pre-impl review: LucidPM.py literal-DB fix in scope, fail-fast config validation, safer .env quote handling, blocking-vs-Gate-2 checklist split, process-env launch for Cycle 2.2)*
 
 ---
 
@@ -40,14 +40,20 @@ stays in cloud" decision carries its real cost.
 
 | File | Change |
 |---|---|
-| `LucidPM/state.py` | Read connection config from `os.getenv` with today's values as defaults; add a SQL-auth branch in `get_conn`; add a tiny optional `.env` loader; add an *optional* single-DB lock. |
+| `LucidPM/state.py` | Read connection config from `os.getenv` with today's values as defaults; add a SQL-auth branch in `get_conn`; add a tiny optional `.env` loader; fail fast on invalid config; add an *optional* single-DB lock. |
 | `LucidPM/components/sidebar.py` | Hide the "Switch" DB button only when the optional single-DB lock is set. |
+| `LucidPM/LucidPM.py` | **Step 6 (narrow):** replace two hardcoded `"TenantCRM"` string literals with `PROD_DB_NAME` so the standalone report endpoints honour an env-overridden production DB name. No behavioural change when the env var is unset. |
 | `.env.example` | Document the new variables. |
 
-**`LucidPM/LucidPM.py` is not touched.** Its `?db=` PDF endpoints keep working:
-in normal (multi-DB) mode they connect to whatever `LUCIDPM_TEST_DB` /
-`LUCIDPM_PROD_DB` resolve to; if the single-DB lock is ever set, `get_conn`
-redirects them to the locked database.
+**`LucidPM/LucidPM.py` — only the two literal-`"TenantCRM"` sites (Step 6).**
+Every `?db=` PDF endpoint already defaults to `TEST_DB_NAME` and passes the
+`db` value straight through to `get_conn`, so those need no change. The two
+exceptions are a label expression (`leases-expiring` report) and a fallback
+candidate list (`application-report`) that compare against / fall back to the
+*string* `"TenantCRM"` instead of `PROD_DB_NAME` — which silently breaks if
+`LUCIDPM_PROD_DB` is ever set to an Azure name. Step 6 swaps those two literals
+for the constant. Nothing else in `LucidPM.py` is touched; `_standalone_state`
+narrowing stays **Handoff 45**.
 
 ### Scope constraint
 
@@ -64,8 +70,12 @@ This handoff is **connection plumbing only**. It does **not**:
   cycle after 2.2**, not a maybe — Cycle 2.2 must capture the cold-resume
   measurement (see the Validation Checklist) as its input.
 - Add `requirements.txt` / `pyproject.toml` — **Cycle 0.1**. This handoff adds
-  **no new package dependency** (the `.env` loader is hand-rolled, ~12 lines).
-- Change any SQL, any query, any schema, or any page's behaviour.
+  **no new package dependency** (the `.env` loader is hand-rolled, ~15 lines).
+- Change any SQL, any query, any schema, or any page's behaviour. (Step 6's
+  `LucidPM.py` edit is a pure constant substitution — identical output when
+  `LUCIDPM_PROD_DB` is unset, which is every current environment.)
+- Refactor the `LucidPM.py` `?db=` fallback logic, the `use_test_db` derivation,
+  or `_standalone_state` — Step 6 is *only* the two string-literal swaps.
 
 ---
 
@@ -228,7 +238,15 @@ def _load_local_env() -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, val = line.partition("=")
-        os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+        key = key.strip()
+        val = val.strip()
+        # Strip at most ONE matching surrounding quote pair; keep the contents
+        # byte-exact (a SQL password may legitimately start or end with a quote,
+        # or contain interior whitespace we must not touch).
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
+            val = val[1:-1]
+        if key:
+            os.environ.setdefault(key, val)
 
 
 _load_local_env()
@@ -257,10 +275,49 @@ _SQL_USER = os.getenv("LUCIDPM_SQL_USER", "")
 _SQL_PASSWORD = os.getenv("LUCIDPM_SQL_PASSWORD", "")
 _SQL_ENCRYPT = os.getenv("LUCIDPM_SQL_ENCRYPT", "yes").strip().lower()
 _SQL_TRUST_CERT = os.getenv("LUCIDPM_SQL_TRUST_CERT", "yes").strip().lower()
-try:
-    _SQL_LOGIN_TIMEOUT = int(os.getenv("LUCIDPM_SQL_LOGIN_TIMEOUT", "30"))
-except ValueError:
-    _SQL_LOGIN_TIMEOUT = 30
+
+
+class ConfigError(RuntimeError):
+    """Raised at import when the DB env vars are set to something unusable."""
+
+
+def _validate_sql_config() -> int:
+    """Fail fast on a broken connection config — never silently degrade.
+
+    Returns the parsed login timeout. All checks are no-ops when the env is
+    unset (auth defaults to a valid 'windows', timeout to '30'), so a plain
+    local `reflex run` never reaches a raise.
+    """
+    if _SQL_AUTH not in ("windows", "sql"):
+        raise ConfigError(
+            f"LUCIDPM_SQL_AUTH={_SQL_AUTH!r} is not valid — use 'windows' or 'sql'."
+        )
+    if _SQL_AUTH == "sql" and not (_SQL_USER and _SQL_PASSWORD):
+        raise ConfigError(
+            "LUCIDPM_SQL_AUTH=sql requires both LUCIDPM_SQL_USER and "
+            "LUCIDPM_SQL_PASSWORD to be set."
+        )
+    if _SQL_ENCRYPT not in ("yes", "no"):
+        raise ConfigError(
+            f"LUCIDPM_SQL_ENCRYPT={_SQL_ENCRYPT!r} is not valid — use 'yes' or 'no'."
+        )
+    if _SQL_TRUST_CERT not in ("yes", "no"):
+        raise ConfigError(
+            f"LUCIDPM_SQL_TRUST_CERT={_SQL_TRUST_CERT!r} is not valid — use 'yes' or 'no'."
+        )
+    raw_timeout = os.getenv("LUCIDPM_SQL_LOGIN_TIMEOUT", "30").strip()
+    try:
+        timeout = int(raw_timeout)
+    except ValueError:
+        raise ConfigError(
+            f"LUCIDPM_SQL_LOGIN_TIMEOUT={raw_timeout!r} is not an integer."
+        ) from None
+    if timeout < 0:
+        raise ConfigError("LUCIDPM_SQL_LOGIN_TIMEOUT must not be negative.")
+    return timeout
+
+
+_SQL_LOGIN_TIMEOUT = _validate_sql_config()
 ```
 
 Notes:
@@ -268,7 +325,14 @@ Notes:
   `send_email` already does a local `import os` — that shadowing stays harmless,
   leave it.
 - Defaults reproduce the current hardcoded values exactly, so a plain
-  `reflex run` with no `.env` and no exported vars behaves identically.
+  `reflex run` with no `.env` and no exported vars behaves identically — and
+  `_validate_sql_config` hits no `raise` on that path.
+- **Fail fast, never degrade silently.** An unknown auth mode, a bad
+  encrypt/trust value, a non-integer/negative timeout, or `auth=sql` with a
+  missing user/password stops startup with a one-line `ConfigError` naming the
+  offending variable — not a cryptic pyodbc error three layers down, and never
+  a silent fallback to Windows auth. `ConfigError` is module-level so callers /
+  a future health check can catch it.
 
 ### Step 2 — `state.py`: `get_conn` with a SQL-auth branch
 
@@ -493,6 +557,11 @@ Var; if it ever matters it is a one-line `rx.cond` in a later touch.
 
 # --- Example: local app against the Azure SQL databases (Cycle 2.2) -------
 # Keeps the Test/Prod toggle; both Azure DBs are reachable by lucidadmin.
+# NOTE: a `.env` file here is read by EVERY `reflex run` from this checkout,
+# on any port. For an ad-hoc Azure test that must not disturb your normal
+# local app, prefer setting these as process env vars in one shell (see
+# `Start-LucidPM-Azure.ps1` / the "How to Deliver" section) rather than
+# creating a persistent `.env`.
 #LUCIDPM_SQL_SERVER=lucidpm-sql-24899.database.windows.net
 #LUCIDPM_SQL_AUTH=sql
 #LUCIDPM_SQL_USER=lucidadmin
@@ -503,6 +572,61 @@ Var; if it ever matters it is a one-line `rx.cond` in a later touch.
 #LUCIDPM_TEST_DB=TenantCRM_Test
 ```
 
+### Step 6 — `LucidPM.py`: two `"TenantCRM"` literals → `PROD_DB_NAME`
+
+`LucidPM/LucidPM.py` compares against / falls back to the bare string
+`"TenantCRM"` in two standalone-endpoint spots. Both are correct today only
+because the local prod DB happens to be named `TenantCRM`; both silently break
+when `LUCIDPM_PROD_DB` is set to an Azure name. Fix = use the constant.
+
+**6a — import.** Line 35:
+
+```python
+from LucidPM.state import run_query, TEST_DB_NAME
+```
+
+**Replace with:**
+
+```python
+from LucidPM.state import run_query, TEST_DB_NAME, PROD_DB_NAME
+```
+
+**6b — `leases-expiring` report label.** In `_build_leases_expiring_pdf_bytes`
+(~line 740):
+
+```python
+            f"{'TEST' if db != 'TenantCRM' else 'PRODUCTION'} database",
+```
+
+**Replace with:**
+
+```python
+            f"{'PRODUCTION' if db == PROD_DB_NAME else 'TEST'} database",
+```
+
+(Same result for every current caller: `db == PROD_DB_NAME` → "PRODUCTION",
+anything else → "TEST". Just no longer pinned to the literal name.)
+
+**6c — `application-report-pdf` fallback candidates.** In
+`application_report_pdf` (~line 892):
+
+```python
+    for candidate in [TEST_DB_NAME, "TenantCRM"]:
+```
+
+**Replace with:**
+
+```python
+    for candidate in [TEST_DB_NAME, PROD_DB_NAME]:
+```
+
+**Do not** otherwise reshape the `db_candidates` loop, the `requested_db`
+handling, or `active_db`. Three lines, nothing else in `LucidPM.py`.
+
+The `?db=` endpoints' `params.get("db", TEST_DB_NAME)` defaults and the
+`state.use_test_db = (db == TEST_DB_NAME)` derivation (~line 297) already use
+the constant and are **correct as-is** — leave them.
+
 ---
 
 ## Do Not Touch
@@ -510,7 +634,9 @@ Var; if it ever matters it is a one-line `rx.cond` in a later touch.
 | What | Why |
 |---|---|
 | `run_query`, `run_exec` and their `db=` defaults | The `db` value still flows through; `get_conn` decides what it means |
-| Any `pages/*.py` or `LucidPM.py` call site passing `db=...` | Works unchanged in multi-DB mode; the single-DB lock (if ever set) is handled centrally in `get_conn` |
+| Any `pages/*.py` call site passing `db=...` | Works unchanged in multi-DB mode; the single-DB lock (if ever set) is handled centrally in `get_conn` |
+| `LucidPM.py` beyond the three lines in Step 6 | Every `?db=` endpoint already routes through `TEST_DB_NAME` + `get_conn`; only the two literal-`"TenantCRM"` spots need the constant. No fallback-logic or `_standalone_state` refactor |
+| The `state.use_test_db = (db == TEST_DB_NAME)` line in `LucidPM.py` (~297) | Already uses the constant; correct in every mode |
 | `get_fernet`, `encrypt_value`, `decrypt_value` | Fernet-key relocation is Cycle 0.4, a separate handoff |
 | `send_email` and its local `import os` | Unrelated; the shadow is harmless |
 | `toggle_db`'s state-import block and every `yield ...reload_on_db_change` | Only the two-line lock guard is added at the top |
@@ -523,51 +649,72 @@ Var; if it ever matters it is a one-line `rx.cond` in a later touch.
 
 ## Validation Checklist
 
-**Local, no `.env`, nothing exported (must be identical to today):**
+The checklist is in **two parts**. Part A is **H58 acceptance** — all of it must
+pass for the handoff to be complete, committed, and moved to
+`Completed Handoffs/`. Part B is **Cycle 2.2 / Gate 2 data capture** — it runs
+the same build against Azure SQL to gather evidence for the *next* decision;
+**a slow or failed cold-resume in Part B does not reopen H58** (see "Cold
+resume" below), it feeds a follow-up handoff.
 
-- [ ] `reflex run` starts; Dashboard, Rent Roll, Tenants, Lease Documents all
-      load data.
+### Part A — H58 acceptance (blocking)
+
+**A1. Local, no config set, nothing exported — must be byte-identical to today:**
+
+- [ ] `reflex run` starts clean (no `ConfigError`); Dashboard, Rent Roll,
+      Tenants, Lease Documents all load data.
 - [ ] Sidebar shows the DB pill with a green dot + `TEST` and the **Switch**
       button.
 - [ ] Click **Switch** → pill goes red / `PRODUCTION`, pages reload with prod
       data (the `db_version` reload path still fires). Switch back works.
-- [ ] Generate a lease PDF (exercises the `?db=` standalone endpoint in
-      `LucidPM.py`) — still works.
+- [ ] Generate a lease PDF **and** a Leases-Expiring report PDF (the `?db=`
+      standalone endpoints, Step 6) — both still work; the Leases-Expiring
+      header still reads "PRODUCTION database" on the prod DB, "TEST" otherwise.
 
-**Local with a `.env` pointing at Azure SQL (Cycle 2.2 dry run — toggle kept):**
+**A2. Fail-fast config validation (set the var, start, observe the error, unset):**
 
-- [ ] Create `.env` from the "local app against Azure" example block, real
-      password. `git status` shows `.env` as **untracked/ignored**, not staged.
-- [ ] `reflex run` connects (first query may take up to ~60 s if the Azure DB
-      was auto-paused; subsequent ones are fast).
-- [ ] **Cold-resume measurement (Gate 2 / next-cycle input).** With the Azure
-      DB confirmed auto-paused (idle > 60 min, or check the portal), start the
-      app and time the first data-bearing page to usable. Record the number and
-      whether a wrong/timeout error was shown mid-wait. This is the evidence for
-      whether the retry-on-resume wrapper is needed immediately.
-- [ ] Sidebar still shows `TEST` + the **Switch** button.
-- [ ] Tenant list, lease list, rent roll, property financials, analytics all
-      render the Azure **Test** data (row counts match Cycle 2.1's verify:
-      Tenants 62, Leases 75, LeasePackageSections 1545, …).
-- [ ] Click **Switch** → pill goes `PRODUCTION`, pages reload against Azure
-      `TenantCRM` (Tenants 46, Leases 93, LeaseGeneratedDocuments 144, …).
-      Switch back to Test works.
-- [ ] A write works end-to-end against Azure — e.g. add a Communication or edit
-      a Work Item on the Test DB, reload, confirm it persisted (then undo).
-- [ ] Wrong password → a clear connection error at startup, not a silent hang
-      (login timeout caps it).
+- [ ] `LUCIDPM_SQL_AUTH=entra` → startup stops with a `ConfigError` naming
+      `LUCIDPM_SQL_AUTH`. Not a silent fall-through to Windows auth.
+- [ ] `LUCIDPM_SQL_AUTH=sql` with no `LUCIDPM_SQL_USER` / `LUCIDPM_SQL_PASSWORD`
+      → `ConfigError` naming both.
+- [ ] `LUCIDPM_SQL_LOGIN_TIMEOUT=soon` → `ConfigError` naming it.
+- [ ] `LUCIDPM_SQL_ENCRYPT=maybe` → `ConfigError` naming it.
 
-**Optional single-DB lock:**
+**A3. `.env` loader correctness (unit-check, no DB needed):**
 
-- [ ] Add `LUCIDPM_SINGLE_DB=TenantCRM` to `.env`, restart → **Switch button is
-      gone**, pill reads `PRODUCTION`, every page hits `TenantCRM` regardless of
-      the `?db=` param on the PDF endpoints.
+- [ ] A `.env` line `LUCIDPM_SQL_PASSWORD="p@ss;w0rd"` → the process sees
+      exactly `p@ss;w0rd` (surrounding quotes removed, interior kept).
+- [ ] A `.env` line `LUCIDPM_SQL_PASSWORD='"leadingquote` → the process sees
+      exactly `"leadingquote` (unbalanced quote preserved, nothing stripped).
+- [ ] A real environment variable already set is **not** overridden by a
+      differing `.env` line (`setdefault` semantics).
+- [ ] `grep -rn "Trusted_Connection" LucidPM/` → only in `state.py` `get_conn`
+      (the `windows` branch). No new `dotenv` in imports/requirements.
 
-**Regression:**
+**A4. Optional single-DB lock:**
 
-- [ ] `grep -rn "Trusted_Connection" LucidPM/` shows it only in `state.py`
-      `get_conn` (the `windows` branch).
-- [ ] No new entry in `requirements`/imports for `dotenv`.
+- [ ] `LUCIDPM_SINGLE_DB=TenantCRM`, restart → **Switch button gone**, pill
+      reads `PRODUCTION`, every page + every `?db=` endpoint hits `TenantCRM`.
+
+### Part B — Cycle 2.2 / Gate 2 data capture (non-blocking for H58)
+
+Run the committed build against Azure SQL. **Use process env vars, not a
+persistent `.env`** (see How to Deliver step 3).
+
+- [ ] App connects to Azure with `LUCIDPM_SQL_AUTH=sql` + `lucidadmin`.
+- [ ] Sidebar still shows `TEST` + the **Switch** button; Tenant / lease / rent
+      roll / financials / analytics render Azure **Test** data (spot-check a few
+      counts against `db\TenantCRM_Test_verify.sql` from Cycle 2.1).
+- [ ] **Switch** → pages reload against Azure `TenantCRM` (prod data, distinct
+      from Test); Switch back works.
+- [ ] A write persists end-to-end against Azure Test (add a Communication or
+      edit a Work Item, reload, confirm; then undo).
+- [ ] Wrong password → a clear error at startup within the login timeout, not a
+      silent hang.
+- [ ] **Cold-resume measurement.** With the Azure DB confirmed auto-paused
+      (idle > 60 min), start the app and time the first data-bearing page to
+      usable. **Record** the seconds and whether any error/timeout showed
+      mid-wait. → This number decides whether the retry-on-resume wrapper
+      (next handoff) is urgent. It does **not** gate H58.
 
 ---
 
@@ -575,14 +722,34 @@ Var; if it ever matters it is a one-line `rx.cond` in a later touch.
 
 Per `CLAUDE.md`: edit the live files in place, no `_vN` copies.
 
-1. Apply Steps 1–5.
-2. Verify the **local, no-`.env`** checklist first (the "did we break the
-   working app" gate).
-3. Then the Azure `.env` checklist — this is effectively Cycle 2.2's smoke test;
-   capture any pyodbc/Azure incompatibility or latency surprise for the Gate 2
-   write-up.
-4. Commit (e.g. `Env-driven SQL connection + SQL-auth branch (Azure Stage 0.3)`).
-5. Move this doc to `Completed Handoffs/`.
+1. Apply Steps 1–6.
+2. Run **Part A** of the checklist. All of it must pass. This is the "did we
+   break the working app / is the plumbing sound" gate — and it needs no Azure
+   access.
+3. **Commit here** (e.g. `Env-driven SQL connection + SQL-auth branch (Azure
+   Stage 0.3)`), move this doc to `Completed Handoffs/`. **H58 is done.**
+4. Then run **Part B** against Azure SQL for the Gate 2 write-up. To keep this
+   isolated from the normal local app, set the vars in **one shell** rather than
+   writing a repo-root `.env` (which every `reflex run` from this checkout would
+   pick up):
+
+   ```powershell
+   $env:LUCIDPM_SQL_SERVER   = "lucidpm-sql-24899.database.windows.net"
+   $env:LUCIDPM_SQL_AUTH     = "sql"
+   $env:LUCIDPM_SQL_USER     = "lucidadmin"
+   $env:LUCIDPM_SQL_PASSWORD = "<paste>"
+   $env:LUCIDPM_SQL_TRUST_CERT = "no"
+   $env:LUCIDPM_SQL_LOGIN_TIMEOUT = "60"
+   & .\.venv\Scripts\reflex.exe run --frontend-port 3002 --backend-port 8002
+   ```
+
+   The vars die with that shell; a normal `Start-LucidPM.ps1` from any other
+   window still hits local SQL. (A `Start-LucidPM-Azure.ps1` wrapping the above
+   is a reasonable convenience to add — untracked or committed alongside the
+   existing `Start-LucidPM.ps1`.) A persistent `.env` is fine **only** if you
+   genuinely want the whole checkout pointed at Azure until you delete it.
+5. Record the Part B results (esp. the cold-resume number) in the roadmap
+   progress log as the Gate 2 input.
 6. `state.py` has `_vN` siblings (`state_1.py` … `state_v9.py`) still in
    `LucidPM/`. Per the incremental-cleanup rule, once this change is verified,
    move `LucidPM/state_*.py` into `Archived Versions/` and commit that
@@ -611,6 +778,7 @@ c:\Inspirion\Dev\TenantCRM\LucidPM\
   LucidPM\state.py                    ← Steps 1–3 (primary)
   LucidPM\components\sidebar.py       ← Step 4
   .env.example                        ← Step 5
+  LucidPM\LucidPM.py                  ← Step 6 (3 lines: import + 2 literals)
   .env                                ← operator-created, gitignored, never committed
 
 Dev app (this handoff): http://localhost:3002   (backend :8002)
@@ -626,7 +794,10 @@ Azure SQL (Cycle 2.1, both DBs already loaded + verified):
 
 ---
 
-*One env loader, one config block, one `get_conn` rewrite (same output when
-unconfigured), one optional single-DB lock, one `rx.cond` in the sidebar, one
-doc file. No new dependency. The Test/Prod toggle works locally and against
-Azure. No call site outside `state.py` changes.*
+*One env loader, one config block with fail-fast validation, one `get_conn`
+rewrite (same output when unconfigured), one optional single-DB lock, one
+`rx.cond` in the sidebar, three constant-swap lines in `LucidPM.py`. No new
+dependency. Invalid config stops startup with a named error; the `.env` loader
+preserves password bytes exactly. The Test/Prod toggle works locally and
+against Azure. H58 acceptance (Part A) needs no Azure access; the Azure run
+(Part B) is Cycle 2.2 data capture and does not gate the handoff.*

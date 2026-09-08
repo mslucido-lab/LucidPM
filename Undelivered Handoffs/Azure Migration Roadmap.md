@@ -104,7 +104,18 @@ everything ≈ 6–12 months.
   now a **required Cycle 2.2 measurement** feeding a retry-on-resume wrapper as the expected next cycle, not
   a "maybe"; (d) stale `.gitignore` note removed (`/db/TenantCRM*.sql` already committed in `1de81d2`),
   replaced with a `.dockerignore` forward-reference for Cycle 3.1.
-- **Next:** implement Handoff 58 → then Cycle 2.2 / Gate 2 falls out of its Azure `.env` validation.
+- **2026-09-07 — Handoff 58 revised again after Codex's pre-implementation review.** Five points, all
+  accepted: (a) **in scope** now — 3 constant-swap lines in `LucidPM.py` (`"TenantCRM"` literal → `PROD_DB_NAME`
+  in the leases-expiring label + the application-report fallback list) so an env-overridden prod DB name
+  actually works; (b) `state.py` gains a `_validate_sql_config()` that **fails fast** with a named
+  `ConfigError` on unknown auth mode, `auth=sql` without user/password, bad encrypt/trust value, or a
+  non-integer/negative timeout — no silent degrade; (c) the `.env` loader strips **one** matching quote pair
+  only, preserving password bytes exactly; (d) the validation checklist is split into **Part A (H58
+  acceptance, blocking, no Azure needed)** and **Part B (Cycle 2.2 / Gate 2 data capture, non-blocking)** —
+  a slow/failed cold-resume feeds a follow-up handoff, doesn't reopen H58; (e) Cycle 2.2 is run with
+  **process env vars in one shell** (or a `Start-LucidPM-Azure.ps1`), not a persistent repo-root `.env` that
+  every `reflex run` from the checkout would pick up. H58 is now ready to implement.
+- **Next:** implement Handoff 58 → then Cycle 2.2 / Gate 2 falls out of its Part B Azure run.
   Stage 0 code prep 0.1 / 0.2 / 0.4 has no Azure dependency and can run in parallel.
 
 ---
