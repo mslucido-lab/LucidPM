@@ -559,9 +559,8 @@ Var; if it ever matters it is a one-line `rx.cond` in a later touch.
 # Keeps the Test/Prod toggle; both Azure DBs are reachable by lucidadmin.
 # NOTE: a `.env` file here is read by EVERY `reflex run` from this checkout,
 # on any port. For an ad-hoc Azure test that must not disturb your normal
-# local app, prefer setting these as process env vars in one shell (see
-# `Start-LucidPM-Azure.ps1` / the "How to Deliver" section) rather than
-# creating a persistent `.env`.
+# local app, set these as process env vars in one shell (see the "How to
+# Deliver" section) rather than creating a persistent `.env`.
 #LUCIDPM_SQL_SERVER=lucidpm-sql-24899.database.windows.net
 #LUCIDPM_SQL_AUTH=sql
 #LUCIDPM_SQL_USER=lucidadmin
@@ -744,9 +743,7 @@ Per `CLAUDE.md`: edit the live files in place, no `_vN` copies.
    ```
 
    The vars die with that shell; a normal `Start-LucidPM.ps1` from any other
-   window still hits local SQL. (A `Start-LucidPM-Azure.ps1` wrapping the above
-   is a reasonable convenience to add — untracked or committed alongside the
-   existing `Start-LucidPM.ps1`.) A persistent `.env` is fine **only** if you
+   window still hits local SQL. A persistent `.env` is fine **only** if you
    genuinely want the whole checkout pointed at Azure until you delete it.
 5. Record the Part B results (esp. the cold-resume number) in the roadmap
    progress log as the Gate 2 input.
