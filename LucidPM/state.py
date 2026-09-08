@@ -3,14 +3,115 @@ Shared DB helpers, constants, and base state.
 Import this from any page or component.
 """
 
+import os
+import datetime
+from pathlib import Path
+
 import reflex as rx
 import pyodbc
-import datetime
 from cryptography.fernet import Fernet
 
-SQL_SERVER = "localhost\\SQLEXPRESS"
-PROD_DB_NAME = "TenantCRM"
-TEST_DB_NAME = "TenantCRM_Test"
+
+def _load_local_env() -> None:
+    """Best-effort loader for a `.env` file at the repo root (dev convenience).
+
+    Lets the Azure-SQL connection settings live in an untracked `.env` file
+    instead of shell exports when running the app locally against a remote DB.
+    Never overrides a variable already set in the real environment, so a
+    container/host that injects real env vars is unaffected (and ships no
+    `.env`, making this a no-op there). Deliberately dependency-free — do not
+    swap in python-dotenv here.
+    """
+    try:
+        env_path = Path(__file__).resolve().parent.parent / ".env"
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key = key.strip()
+        val = val.strip()
+        # Strip at most ONE matching surrounding quote pair; keep the contents
+        # byte-exact (a SQL password may legitimately start or end with a quote,
+        # or contain interior whitespace we must not touch).
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
+            val = val[1:-1]
+        if key:
+            os.environ.setdefault(key, val)
+
+
+_load_local_env()
+
+# --- Connection config: env-driven, with today's local values as defaults -----
+SQL_SERVER = os.getenv("LUCIDPM_SQL_SERVER", "localhost\\SQLEXPRESS")
+PROD_DB_NAME = os.getenv("LUCIDPM_PROD_DB", "TenantCRM")
+TEST_DB_NAME = os.getenv("LUCIDPM_TEST_DB", "TenantCRM_Test")
+
+# Optional single-database lock. When set to a database name, EVERY connection
+# goes to it (ignoring the db= argument) and the Test/Prod toggle is hidden.
+# Leave unset for local dev and for cloud dev where you still want the toggle
+# (both Azure DBs are reachable). Set it only for a locked-down deployment.
+SINGLE_DB_NAME = os.getenv("LUCIDPM_SINGLE_DB") or None
+
+# Deployment environment marker. Unset (or "local") for local dev; "cloud" when
+# running inside Azure Container Apps. Nothing branches on this yet — it is the
+# single source of truth that Stage 5.3 (Entra ID auth) will gate the
+# X-MS-CLIENT-PRINCIPAL-NAME header-trust on. Kept separate from
+# LUCIDPM_SINGLE_DB deliberately: "which database(s)" and "am I in the cloud"
+# are orthogonal (per the PM cloud-migration knowledge share).
+LUCIDPM_ENV = (os.getenv("LUCIDPM_ENV", "local").strip().lower() or "local")
+
+_SQL_AUTH = os.getenv("LUCIDPM_SQL_AUTH", "windows").strip().lower()   # "windows" | "sql"
+_SQL_USER = os.getenv("LUCIDPM_SQL_USER", "")
+_SQL_PASSWORD = os.getenv("LUCIDPM_SQL_PASSWORD", "")
+_SQL_ENCRYPT = os.getenv("LUCIDPM_SQL_ENCRYPT", "yes").strip().lower()
+_SQL_TRUST_CERT = os.getenv("LUCIDPM_SQL_TRUST_CERT", "yes").strip().lower()
+
+
+class ConfigError(RuntimeError):
+    """Raised at import when the DB env vars are set to something unusable."""
+
+
+def _validate_sql_config() -> int:
+    """Fail fast on a broken connection config — never silently degrade.
+
+    Returns the parsed login timeout. All checks are no-ops when the env is
+    unset (auth defaults to a valid 'windows', timeout to '30'), so a plain
+    local `reflex run` never reaches a raise.
+    """
+    if _SQL_AUTH not in ("windows", "sql"):
+        raise ConfigError(
+            f"LUCIDPM_SQL_AUTH={_SQL_AUTH!r} is not valid — use 'windows' or 'sql'."
+        )
+    if _SQL_AUTH == "sql" and not (_SQL_USER and _SQL_PASSWORD):
+        raise ConfigError(
+            "LUCIDPM_SQL_AUTH=sql requires both LUCIDPM_SQL_USER and "
+            "LUCIDPM_SQL_PASSWORD to be set."
+        )
+    if _SQL_ENCRYPT not in ("yes", "no"):
+        raise ConfigError(
+            f"LUCIDPM_SQL_ENCRYPT={_SQL_ENCRYPT!r} is not valid — use 'yes' or 'no'."
+        )
+    if _SQL_TRUST_CERT not in ("yes", "no"):
+        raise ConfigError(
+            f"LUCIDPM_SQL_TRUST_CERT={_SQL_TRUST_CERT!r} is not valid — use 'yes' or 'no'."
+        )
+    raw_timeout = os.getenv("LUCIDPM_SQL_LOGIN_TIMEOUT", "30").strip()
+    try:
+        timeout = int(raw_timeout)
+    except ValueError:
+        raise ConfigError(
+            f"LUCIDPM_SQL_LOGIN_TIMEOUT={raw_timeout!r} is not an integer."
+        ) from None
+    if timeout < 0:
+        raise ConfigError("LUCIDPM_SQL_LOGIN_TIMEOUT must not be negative.")
+    return timeout
+
+
+_SQL_LOGIN_TIMEOUT = _validate_sql_config()
 
 BRAND_PRIMARY = "#4A63A8"
 BRAND_DARK = "#2F4C97"
@@ -23,16 +124,36 @@ METHOD_CHOICES = [
 ]
 
 
+def _odbc_brace(value: str) -> str:
+    """Wrap an ODBC connection-string value in braces, escaping any '}'.
+
+    SQL passwords routinely contain ';' '=' '{' '}' — all of which break a bare
+    key=value ODBC segment. Braces are the ODBC-defined escape for this.
+    """
+    return "{" + value.replace("}", "}}") + "}"
+
+
 def get_conn(db: str) -> pyodbc.Connection:
-    conn_str = (
-        "DRIVER={ODBC Driver 18 for SQL Server};"
-        f"SERVER={SQL_SERVER};"
-        f"DATABASE={db};"
-        "Trusted_Connection=yes;"
-        "Encrypt=yes;"
-        "TrustServerCertificate=yes;"
-    )
-    return pyodbc.connect(conn_str)
+    # Single-DB lock (if set) overrides the requested name; otherwise the app
+    # connects to exactly the database it asked for (local Test/Prod, or the
+    # matching Azure DB — all reachable by the configured login).
+    target_db = SINGLE_DB_NAME or db
+
+    parts = [
+        "DRIVER={ODBC Driver 18 for SQL Server}",
+        f"SERVER={SQL_SERVER}",
+        f"DATABASE={target_db}",
+        f"Encrypt={_SQL_ENCRYPT}",
+        f"TrustServerCertificate={_SQL_TRUST_CERT}",
+    ]
+    if _SQL_AUTH == "sql":
+        parts.append(f"UID={_odbc_brace(_SQL_USER)}")
+        parts.append(f"PWD={_odbc_brace(_SQL_PASSWORD)}")
+    else:
+        parts.append("Trusted_Connection=yes")
+
+    conn_str = ";".join(parts) + ";"
+    return pyodbc.connect(conn_str, timeout=_SQL_LOGIN_TIMEOUT)
 
 
 def run_query(sql: str, params: tuple = (), db: str = TEST_DB_NAME) -> list[dict]:
@@ -376,11 +497,19 @@ class AppState(rx.State):
     db_version: int = 0
 
     @rx.var
+    def is_single_db(self) -> bool:
+        return SINGLE_DB_NAME is not None
+
+    @rx.var
     def db(self) -> str:
+        if SINGLE_DB_NAME is not None:
+            return SINGLE_DB_NAME
         return TEST_DB_NAME if self.use_test_db else PROD_DB_NAME
 
     @rx.var
     def db_label(self) -> str:
+        if SINGLE_DB_NAME is not None:
+            return "PRODUCTION"
         return "TEST" if self.use_test_db else "PRODUCTION"
 
     @rx.var
@@ -388,6 +517,8 @@ class AppState(rx.State):
         return "Switch to Production" if self.use_test_db else "Switch to Test"
 
     def toggle_db(self):
+        if SINGLE_DB_NAME is not None:
+            return   # locked to one database — nothing to toggle
         self.use_test_db = not self.use_test_db
         self.db_version += 1
         # Yield reload events for all page states that need refreshing

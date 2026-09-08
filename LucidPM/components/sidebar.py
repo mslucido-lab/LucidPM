@@ -316,13 +316,16 @@ def sidebar(current_path: str = "/") -> rx.Component:
                         class_name="sidebar-label",
                     ),
                     rx.spacer(),
-                    rx.button(
-                        "Switch",
-                        on_click=AppState.toggle_db,
-                        size="1",
-                        variant="ghost",
-                        class_name="sidebar-label",
-                        style={"color": "rgba(255,255,255,0.70)", "font_size": "11px"},
+                    rx.cond(
+                        ~AppState.is_single_db,
+                        rx.button(
+                            "Switch",
+                            on_click=AppState.toggle_db,
+                            size="1",
+                            variant="ghost",
+                            class_name="sidebar-label",
+                            style={"color": "rgba(255,255,255,0.70)", "font_size": "11px"},
+                        ),
                     ),
                     align="center",
                     width="100%",

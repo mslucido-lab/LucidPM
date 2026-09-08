@@ -32,7 +32,7 @@ from LucidPM.pages.rent_roll_pdf import generate_rent_roll_pdf
 from LucidPM.pages.proforma_pdf import generate_proforma_pdf
 from LucidPM.pages.property_financials_pdf import generate_property_financials_pdf
 from LucidPM.pages.communications import communications_page, CommunicationsState
-from LucidPM.state import run_query, TEST_DB_NAME
+from LucidPM.state import run_query, TEST_DB_NAME, PROD_DB_NAME
 
 # ── FastAPI app for custom endpoints ─────────────────────────────────────────
 
@@ -737,7 +737,7 @@ async def leases_expiring_pdf_endpoint(request: Request):
         Paragraph(
             f"Next {horizon_days} days &nbsp;·&nbsp; "
             f"{today.strftime('%m/%d/%Y')} – {horizon.strftime('%m/%d/%Y')} &nbsp;·&nbsp; "
-            f"{'TEST' if db != 'TenantCRM' else 'PRODUCTION'} database",
+            f"{'PRODUCTION' if db == PROD_DB_NAME else 'TEST'} database",
             sub_style,
         ),
         HRFlowable(width="100%", thickness=1, color=BRAND_PRIMARY_RGB, spaceAfter=8),
@@ -889,7 +889,7 @@ def application_report_pdf(request: Request, background_tasks: BackgroundTasks):
     db_candidates = []
     if requested_db:
         db_candidates.append(requested_db)
-    for candidate in [TEST_DB_NAME, "TenantCRM"]:
+    for candidate in [TEST_DB_NAME, PROD_DB_NAME]:
         if candidate and candidate not in db_candidates:
             db_candidates.append(candidate)
 
