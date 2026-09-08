@@ -128,9 +128,20 @@ everything ≈ 6–12 months.
   `UID={}`/`PWD={}` brace-escaping is the suspect if login fails); `tenants.py:703` `self.db or "TenantCRM"`
   stale literal (→ next `tenants.py` touch); hardcoded `http://localhost:8000` in `tenants.py:704` +
   `lease_package_builder.py` 364/370/1825 (→ Stage 3 blocker, now in `CLAUDE.md` standing backlog + Cycle 3.1).
-- **Next:** Cycle 2.2 / Gate 2 — run H58's Part B checklist against Azure SQL (process env vars in one shell,
-  ports 3002/8002), capture cold-resume-from-auto-pause latency as the retry-wrapper input.
-  Stage 0 code prep 0.1 / 0.2 / 0.4 has no Azure dependency and can run in parallel.
+- **2026-09-08 — Handoff 59 implemented + Claude-reviewed** (`fc615e8` impl, `6bfeabc` orphan+sibling
+  archive; doc → `Completed Handoffs/`; `docs/H59-validation.md`). 7 page modules → `state.api_base_url()`
+  off Reflex's `api_url`; default `http://localhost:8000` byte-identical, `--backend-port N` and
+  `REFLEX_API_URL` both verified. Review: clean, no bugs. Stage 3.1 still sets `REFLEX_API_URL` to the
+  ingress host.
+- **2026-09-08 — Handoff 60 written** (`Undelivered Handoffs/LucidoPM_ChatGPT_Handoff_60_SqlResumeRetry.md`,
+  not started). Bounded transient-only retry around `pyodbc.connect` in `state.get_conn()` for Azure
+  serverless auto-pause. `LUCIDPM_SQL_CONNECT_RETRIES` (2) + `_RETRY_BACKOFF` (3); retries SQLSTATE
+  `08*`/`HYT*` + native `40613` etc., fails fast on auth (`28000`) / bad-db (`4060`). Predicate + timeout
+  behaviour verified against real `pyodbc 5.3.0` errors. Byte-identical when the DB answers first try.
+  A/B/C acceptance needs no Azure; D is the Cycle 2.2 resume measurement.
+- **Next:** Cycle 2.2 / Gate 2 — point the local app at Azure SQL (process env vars in one shell, ports
+  3002/8002), walk the workflows, and run H60 checklist D (record resume timing). Implement H60 (A/B/C)
+  and the remaining Stage 0 prep (0.1 / 0.2 / 0.4) anytime — no Azure dependency, can run in parallel.
 
 ---
 
@@ -215,7 +226,10 @@ leaves local behaviour unchanged when no cloud env vars are set.
 - Walk the major workflows: tenant / lease CRUD, rent schedules, property financials, analytics, lease document
   generation, PDF generation.
 - Measure latency — a local app against a cloud DB is slower; confirm it's tolerable. Capture the
-  **cold-resume-from-auto-pause** number (H58 Part B) as the retry-wrapper input.
+  **cold-resume-from-auto-pause** number: this is checklist **D** of **Handoff 60** (SQL connect
+  retry-on-resume, written 2026-09-08, not started). H60's A/B/C acceptance needs no Azure and can land
+  before this cycle; running it here just records the resume timing and tunes `LUCIDPM_SQL_CONNECT_RETRIES`
+  / `_RETRY_BACKOFF`.
 - **G2 — GO/NO-GO:** any blocking pyodbc/Azure-SQL incompatibility, or unworkable latency, surfaces here before
   the container work starts.
 - Risk: medium.
