@@ -19,6 +19,7 @@ from typing import Optional
 import reflex as rx
 
 from LucidPM.state import (
+    api_base_url,
     AppState, run_query, run_exec, decrypt_value, resolve_upload_filename,
     BRAND_PRIMARY, BRAND_DARK, METHOD_CHOICES,
 )
@@ -1691,7 +1692,7 @@ class CommunicationsState(AppState):
         except (ValueError, IndexError):
             pass
         return (
-            f"http://localhost:8000/api/communications-pdf"
+            f"{api_base_url()}/api/communications-pdf"
             f"?tenant_id={tid}&start={self.start_date}&end={self.end_date}&db={self.db}"
         )
 

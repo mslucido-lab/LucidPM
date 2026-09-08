@@ -203,7 +203,7 @@ Four-tab layout:
 #     break in 0.9.0. Do not add new rx.Base usage; flag for future migration.
 #   - Cannot use lambda with arguments in rx.foreach row components in all Reflex versions.
 #     Use named event handlers where possible.
-#   - PDF download URLs must target localhost:8000 explicitly (frontend on 3000, backend 8000).
+#   - PDF download URLs come from state.api_base_url() (Reflex api_url); local default is backend :8000.
 #
 # KEY FILES IN THIS MODULE (all need cleanup work):
 #   lease_documents_v2_8_1.py   - this file (admin page)

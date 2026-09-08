@@ -64,7 +64,7 @@ from xml.sax.saxutils import escape
 import reflex as rx
 
 
-from LucidPM.state import AppState, run_query, run_exec, BRAND_DARK, BRAND_PRIMARY
+from LucidPM.state import AppState, run_query, run_exec, BRAND_DARK, BRAND_PRIMARY, api_base_url
 from LucidPM.components.sidebar import page_shell
 from LucidPM.pages.lease_documents_pdf import (
     DEFAULT_DOCUMENT_ROOT,
@@ -361,13 +361,13 @@ class LeasePackageBuilderState(AppState):
     def generated_download_url(self) -> str:
         if self.last_generated_document_id <= 0:
             return ""
-        return f"http://localhost:8000/api/lease-generated-pdf?generated_id={self.last_generated_document_id}&db={self.db}"
+        return f"{api_base_url()}/api/lease-generated-pdf?generated_id={self.last_generated_document_id}&db={self.db}"
 
     @rx.var
     def selected_generated_download_url(self) -> str:
         if self.selected_generated_id <= 0:
             return ""
-        return f"http://localhost:8000/api/lease-generated-pdf?generated_id={self.selected_generated_id}&db={self.db}"
+        return f"{api_base_url()}/api/lease-generated-pdf?generated_id={self.selected_generated_id}&db={self.db}"
 
     @rx.var
     def selected_generated_summary(self) -> str:
@@ -1822,7 +1822,7 @@ class LeasePackageBuilderState(AppState):
                 is_stale=(revised_count > 0),
                 section_count=int(r.get("SectionCount") or 0),
                 package_notes=str(r.get("PackageNotes") or ""),
-                download_url=f"http://localhost:8000/api/lease-generated-pdf?generated_id={generated_id}&db={self.db}",
+                download_url=f"{api_base_url()}/api/lease-generated-pdf?generated_id={generated_id}&db={self.db}",
             ))
         self.generated_packages = package_rows
 

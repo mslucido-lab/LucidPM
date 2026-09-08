@@ -14,7 +14,7 @@ import reflex as rx
 import datetime
 from typing import Optional
 
-from LucidPM.state import AppState, run_query, run_exec, BRAND_DARK, BRAND_PRIMARY
+from LucidPM.state import AppState, run_query, run_exec, BRAND_DARK, BRAND_PRIMARY, api_base_url
 from LucidPM.components.sidebar import page_shell
 
 
@@ -88,7 +88,7 @@ class PropertyFinancialsState(AppState):
         prop = self.selected_property if self.selected_property else ""
         mode = self.report_mode.replace(" ", "%20")
         return (
-            f"http://localhost:8000/api/property-financials-pdf"
+            f"{api_base_url()}/api/property-financials-pdf"
             f"?property={prop}&mode={mode}&year={self.selected_year}"
             f"&cap_rate={self.cap_rate}&db={self.db}"
         )

@@ -156,6 +156,18 @@ def get_conn(db: str) -> pyodbc.Connection:
     return pyodbc.connect(conn_str, timeout=_SQL_LOGIN_TIMEOUT)
 
 
+def api_base_url() -> str:
+    """Browser-reachable base URL of the Reflex backend API, no trailing slash.
+
+    Replaces the `http://localhost:8000` literal that every PDF/report download
+    link used to hardcode. Reads Reflex's own `api_url` config:
+      * unset            -> "http://localhost:8000" (local behaviour unchanged)
+      * --backend-port N  -> "http://localhost:N" (Reflex rewrites api_url)
+      * deployed          -> whatever REFLEX_API_URL / rxconfig.py sets
+    """
+    return rx.config.get_config().api_url.rstrip("/")
+
+
 def run_query(sql: str, params: tuple = (), db: str = TEST_DB_NAME) -> list[dict]:
     with get_conn(db) as conn:
         cursor = conn.cursor()

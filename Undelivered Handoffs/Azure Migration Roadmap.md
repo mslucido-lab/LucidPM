@@ -244,10 +244,10 @@ websocket event channel through Container Apps ingress.
 - **Re-verify the SQL-auth connection string on Linux/unixODBC** (H58 review finding 3): the `{}}`
   brace-escaping in `state._odbc_brace` is solid on the Windows MS Driver 18 but historically flakier on
   unixODBC. Confirm a password containing `}` / `;` / `=` still connects from inside the container.
-- **Fix the hardcoded `http://localhost:8000` URLs before this ships — Handoff 59 written + Codex-reviewed
-  2026-09-07** (`Undelivered Handoffs/LucidoPM_ChatGPT_Handoff_59_ApiBaseUrl.md`, not started). 7 page
-  modules (+ 1 comment-only); fix = `state.api_base_url()` off Reflex's `api_url` config. No Azure dependency
-  — can land any time before 3.1; then set `REFLEX_API_URL` (or `rxconfig.py`) to the ingress host here in 3.1.
+- **API URL plumbing complete - Handoff 59, 2026-09-08.** Seven page modules now use
+  `state.api_base_url()`; default/non-default port PDF delivery and isolated config overrides
+  verified (`docs/H59-validation.md`). Handoff in `Completed Handoffs/`. Set `REFLEX_API_URL`
+  (or `rxconfig.py`) to the browser-reachable ingress host here in Stage 3.1.
 - **Done when:** `docker build` + `docker run` locally → app loads and talks to Azure SQL.
 - Risk: **HIGH** — Reflex production containerization is the single most likely thing to blow the schedule.
 

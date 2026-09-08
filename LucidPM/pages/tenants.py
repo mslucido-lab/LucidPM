@@ -72,6 +72,7 @@ import os
 import re
 
 from LucidPM.state import (
+    api_base_url, PROD_DB_NAME,
     AppState, run_query, run_exec, fmt_date, resolve_upload_filename,
     BRAND_PRIMARY, BRAND_DARK, METHOD_CHOICES, TEST_DB_NAME,
 )
@@ -700,8 +701,8 @@ class TenantState(AppState):
     def application_report_url(self) -> str:
         if self.tenant_id <= 0:
             return "#"
-        db_name = self.db or "TenantCRM"
-        return f"http://localhost:8000/api/application-report-pdf?tenant_id={self.tenant_id}&db={db_name}"
+        db_name = self.db or PROD_DB_NAME
+        return f"{api_base_url()}/api/application-report-pdf?tenant_id={self.tenant_id}&db={db_name}"
 
     @rx.var
     def rent_due_day_warning(self) -> str:

@@ -17,6 +17,7 @@ import reflex as rx
 import datetime
 
 from LucidPM.state import (
+    api_base_url,
     AppState, run_query,
     BRAND_PRIMARY, BRAND_DARK,
 )
@@ -331,9 +332,9 @@ class RentRollState(AppState):
 
     @rx.var
     def pdf_download_url(self) -> str:
-        """Builds the PDF endpoint URL pointing to the Reflex backend on port 8000."""
+        """Builds the PDF endpoint URL pointing to the Reflex backend (see state.api_base_url)."""
         params = f"?as_of={self.as_of_date}&property={self.property_filter}&basis={self.basis}&db={self.db}"
-        return "http://localhost:8000/api/rent-roll-pdf" + params
+        return f"{api_base_url()}/api/rent-roll-pdf" + params
 
 
 # ── UI helpers ────────────────────────────────────────────────────────────────

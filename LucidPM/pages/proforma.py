@@ -27,7 +27,7 @@ import datetime
 from typing import Optional
 from urllib.parse import quote
 
-from LucidPM.state import AppState, run_query, BRAND_DARK, BRAND_PRIMARY
+from LucidPM.state import AppState, run_query, BRAND_DARK, BRAND_PRIMARY, api_base_url
 from LucidPM.components.sidebar import page_shell
 
 
@@ -82,7 +82,7 @@ class ProformaState(AppState):
     def pdf_download_url(self) -> str:
         prop = self.selected_property if self.selected_property else "All"
         return (
-            f"http://localhost:8000/api/proforma-pdf"
+            f"{api_base_url()}/api/proforma-pdf"
             f"?year={self.proforma_year}&property={prop}&basis={self.basis}&db={self.db}"
         )
 
@@ -90,7 +90,7 @@ class ProformaState(AppState):
     def bank_package_url(self) -> str:
         prop = quote(self.selected_property) if self.selected_property else "All"
         return (
-            f"http://localhost:8000/api/bank-package-pdf"
+            f"{api_base_url()}/api/bank-package-pdf"
             f"?year={self.proforma_year}&property={prop}&db={self.db}&cap_rate={self.cap_rate}"
         )
 

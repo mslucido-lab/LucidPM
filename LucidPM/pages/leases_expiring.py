@@ -21,7 +21,7 @@ from typing import Optional
 
 import reflex as rx
 
-from LucidPM.state import AppState, run_query, BRAND_PRIMARY, BRAND_DARK
+from LucidPM.state import AppState, run_query, BRAND_PRIMARY, BRAND_DARK, api_base_url
 from LucidPM.components.sidebar import page_shell
 
 
@@ -536,7 +536,7 @@ class LeasesExpiringState(AppState):
     @rx.var
     def pdf_url(self) -> str:
         return (
-            f"http://localhost:8000/api/leases-expiring-pdf"
+            f"{api_base_url()}/api/leases-expiring-pdf"
             f"?horizon={self.horizon_days}&db={self.db}"
         )
 
