@@ -83,6 +83,27 @@ everything ≈ 6–12 months.
   `.env` loader. **Being revised** — the first draft's `CLOUD_DB_NAME` forced single-DB mode and hid the
   toggle; since `TenantCRM_Test` is now on Azure too, the toggle stays (`LUCIDPM_PROD_DB` / `LUCIDPM_TEST_DB`
   point at the Azure names; optional `LUCIDPM_SINGLE_DB=1` to hide it for a future multi-user deployment).
+- **2026-09-07 — Portfolio Manager cloud-migration knowledge share landed** in
+  `Undelivered Handoffs/lucidpm-cloud-migration-knowledge-share.md` (untracked as of writing). PM is **already
+  running as a public HTTPS Azure Container App** in this subscription, which turns most of Stage 3 from
+  "unknown" into "follow the proven pattern." Reusable now:
+  - Shared **Container Apps environment `lucido-apps-env`** + Log Analytics **`lucido-apps-logs`** (both
+    westus3) already exist — LucidPM reuses them, does **not** create a second environment.
+  - Private **GHCR** image pattern (`ghcr.io/mslucido-lab/<image>`, kept private, separate read-only pull
+    token for Azure) — confirms the roadmap's "not ACR" call.
+  - `python:3.12-slim-bookworm` + ODBC Driver 18 + non-root user + `.dockerignore` excludes.
+  - Container Apps secrets via `secretref:` env vars; explicit schema bootstrap (not on-start); Entra
+    built-in auth (single-tenant app reg, `/.auth/login/aad/callback`, ID-token issuance, require assignment);
+    scale-to-zero with an explicit HTTP scale rule and the 5-min idle cooldown.
+  - Still LucidPM-specific unknowns: Reflex frontend/backend split in one container, and the Reflex
+    websocket event channel surviving Container Apps ingress (Gate 3).
+- **2026-09-07 — Handoff 58 reconciled against that knowledge share.** Edits: (a) `lucidadmin` is Cycle 2.2
+  only — cloud uses a dedicated **contained non-admin SQL user**, provisioned in **both** DBs if the toggle
+  is kept; (b) added a `LUCIDPM_ENV` marker (`local`|`cloud`), orthogonal to `LUCIDPM_SINGLE_DB`, as the hook
+  Stage 5.3 Entra header-trust will gate on — nothing branches on it yet; (c) cold-resume-from-auto-pause is
+  now a **required Cycle 2.2 measurement** feeding a retry-on-resume wrapper as the expected next cycle, not
+  a "maybe"; (d) stale `.gitignore` note removed (`/db/TenantCRM*.sql` already committed in `1de81d2`),
+  replaced with a `.dockerignore` forward-reference for Cycle 3.1.
 - **Next:** implement Handoff 58 → then Cycle 2.2 / Gate 2 falls out of its Azure `.env` validation.
   Stage 0 code prep 0.1 / 0.2 / 0.4 has no Azure dependency and can run in parallel.
 
@@ -172,8 +193,19 @@ leaves local behaviour unchanged when no cloud env vars are set.
 
 ## Stage 3 — Containerize and deploy (the hard part)
 
-### Cycle 3.1 — Dockerfile: Reflex + ODBC *(handoff; HIGH risk)*
-- Linux base image + Microsoft ODBC Driver 18 for SQL Server + Python deps from Cycle 0.1.
+**Now largely de-risked by the PM precedent** (`lucidpm-cloud-migration-knowledge-share.md`, 2026-09-07):
+Portfolio Manager already runs this exact platform. Reuse — don't rediscover — the shared Container Apps
+environment `lucido-apps-env`, Log Analytics `lucido-apps-logs`, the private GHCR + read-only pull-token
+pattern, `python:3.12-slim-bookworm` + ODBC Driver 18 + non-root, `.dockerignore` excludes, Container Apps
+`secretref:` secrets, explicit (not on-start) schema bootstrap, and the scale-to-zero HTTP-scale-rule setup.
+The residual HIGH risk is **Reflex-specific only**: the frontend/backend split in one container, and the
+websocket event channel through Container Apps ingress.
+
+### Cycle 3.1 — Dockerfile: Reflex + ODBC *(handoff; HIGH risk — Reflex parts only)*
+- Base: `python:3.12-slim-bookworm` + Microsoft ODBC Driver 18 for SQL Server + Python deps from Cycle 0.1.
+- Add `.dockerignore` per the knowledge share's exclusion list (mirrors `.gitignore` — `.env`, keys,
+  `/db/TenantCRM*.sql`, `.web/`, `.venv/`, tests, handoff dirs).
+- Non-root runtime user; `chown` the app dir before the `USER` switch; compile bytecode in the build.
 - Resolve the Reflex frontend (port 3000) / backend (port 8000) split into one deployable image — decide the
   single-container topology (build/export the static frontend and serve it from the backend, vs run both
   processes under a supervisor).
@@ -182,11 +214,13 @@ leaves local behaviour unchanged when no cloud env vars are set.
 - Risk: **HIGH** — Reflex production containerization is the single most likely thing to blow the schedule.
 
 ### Cycle 3.2 — Push to a free registry + deploy to a temp hostname *(handoff; HIGH risk)* — **GATE 3**
-- Build/push the image to **GitHub Container Registry or Docker Hub free tier — not Azure Container Registry**
-  (ACR is not free; `az containerapp up` provisions one by default — do not use that path unmodified).
-- Create the shared Container Apps Environment (Portfolio Manager will reuse it later).
-- Create the LucidPM Container App: point at the free registry, configure env vars + secrets, ingress on the
-  temporary `*.azurecontainerapps.io` hostname.
+- Build/push the image to **private GHCR** (`ghcr.io/mslucido-lab/<lucidpm-image>`) — the pattern PM already
+  uses. Not ACR (not free). Create a **separate read-only pull token** for Azure; never use a developer
+  publish token as the Container Apps registry credential.
+- **Reuse the existing shared environment `lucido-apps-env`** (created for PM) — do not create a second one.
+- Create the LucidPM Container App: point at GHCR, configure env vars + `secretref:` secrets, `min-replicas 1`
+  while bootstrapping, ingress on the temporary `*.azurecontainerapps.io` hostname.
+- Run schema bootstrap explicitly via `az containerapp exec` after deploy (keep bootstrap-on-start disabled).
 - Validate: loads over HTTPS on the temp URL; **scale-to-zero works**; measure cold-start time; confirm the
   Reflex websocket event channel survives the Container Apps ingress.
 - **G3 — GO/NO-GO:** cold start tolerable? websocket stream stable through ingress? compute staying inside the
@@ -240,9 +274,17 @@ with no paid registry · a file survives a container restart.
 
 ### Cycle 5.3 — Authentication *(handoff)*
 - Enable Container Apps **built-in auth with Microsoft Entra ID** — infrastructure-level, no custom auth code.
-  Restrict to Mark's account / directory.
+  Follow the PM knowledge-share recipe: **single-tenant** app registration, redirect URI
+  `https://<app-fqdn>/.auth/login/aad/callback`, **ID-token issuance enabled**, service principal created,
+  auth mode `RedirectToLoginPage` + HTTPS required, client secret held as a Container Apps secret with a
+  recorded rotation date. Route logout through `/.auth/logout` (don't bounce straight back to the app root).
+- **Access assignment:** set the enterprise app to *require assignment*, assign Mark first, then enable the
+  requirement (assign-before-enable, to avoid locking out the person making the change).
+- If LucidPM ever trusts `X-MS-CLIENT-PRINCIPAL-NAME`, gate it on `LUCIDPM_ENV=cloud` (the marker added in
+  Handoff 58) — never trust that header in local/arbitrary hosting.
 - **Done when:** the app requires login and no application auth code was added.
-- Risk: medium — Entra + the Reflex websocket auth handshake.
+- Risk: medium — Entra + the Reflex websocket auth handshake (PM's was a Flask app, so this handshake is the
+  one part not already proven).
 
 ### Cycle 5.4 — Custom domain + TLS *(handoff)*
 - Add `lucidpm.<domain>`, DNS records, Azure-managed certificate.
@@ -301,7 +343,7 @@ storage account. **Never shared:** the application databases.
 | Decision | When | Default recommendation |
 |---|---|---|
 | ~~Does the free offer cover 1 database or more per subscription?~~ | ~~Gate 1~~ | **RESOLVED 2026-09-06:** up to **10** free GP databases per subscription, each with its **own** 100k vCore-sec + 32 GB/month allowance (not shared). `TenantCRM` + `TenantCRM_Test` = 2/10. Region locked to westus3 for all free DBs. |
-| ~~Prod/Test toggle in cloud builds~~ | ~~Cycle 0.3~~ | **RESOLVED 2026-09-06:** toggle **stays** in cloud (single-user tool, both DBs on Azure). Optional `LUCIDPM_SINGLE_DB=1` to hide it for a future multi-user deployment. |
+| ~~Prod/Test toggle in cloud builds~~ | ~~Cycle 0.3~~ | **RESOLVED 2026-09-06, refined 2026-09-07:** toggle **stays** in cloud (single-user tool, both DBs on Azure). Optional `LUCIDPM_SINGLE_DB=<name>` hides it for a future multi-user deployment. **Cost of keeping it:** the PM knowledge share bars using the server admin in cloud, so the cloud build needs a dedicated contained SQL user — and contained users are per-DB, so the same user + password must be created in **both** `TenantCRM` and `TenantCRM_Test`. `lucidadmin` is Cycle 2.2 (local smoke test) only. |
 | Reflex single-container topology | Cycle 3.1 | Export static frontend, serve from backend process |
 | Document identifier scheme | Cycle 5.1 | Opaque key stored in DB, blob path derived in code |
 | Entra ID scope | Cycle 5.3 | Single-user / personal directory |
@@ -315,4 +357,7 @@ storage account. **Never shared:** the application databases.
 | Free SQL tier doesn't apply to the subscription | 1.2 | Gate 1 stops the project before further spend |
 | Cold-start latency makes scale-to-zero unusable | 3.2 | Measure at Gate 3; fallback is a minimum-1-replica cost estimate |
 | Storage-path data migration corrupts document links | 5.1 | Do the stale-path cleanup first; migrate Test DB and verify before Prod |
+| Azure SQL serverless auto-pause: first-request timeout / error after idle | 2.2+ | Measure cold-resume at Cycle 2.2 (H58 checklist); retry-on-resume wrapper as the next cycle; `LUCIDPM_SQL_LOGIN_TIMEOUT=60` interim |
+| Cloud build accidentally ships with `lucidadmin` / PII in an image layer | 3.1–3.2 | Contained non-admin SQL user (both DBs); `.dockerignore` mirrors `.gitignore`; secrets only via `secretref:` |
+| Entra + Reflex websocket auth handshake (PM proved Flask, not Reflex) | 5.3 | The one auth-path unknown the PM precedent doesn't cover — test with ingress still IP-restricted |
 | Portfolio Manager holds surprises (unreviewed repo) | 6.1 | Gap analysis before any PM code change; estimates are soft until then |

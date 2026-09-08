@@ -1,6 +1,6 @@
 # LucidoPM — ChatGPT Handoff 58
 *Env-driven SQL connection + SQL-auth branch (Azure Migration Stage 0.3)*
-*Prepared: 2026-09-06 · revised 2026-09-06 (toggle stays in cloud)*
+*Prepared: 2026-09-06 · revised 2026-09-06 (toggle stays in cloud) · revised 2026-09-07 (reconciled with the PM cloud-migration knowledge share: contained-user note, LUCIDPM_ENV marker, cold-resume gate, .dockerignore forward-ref)*
 
 ---
 
@@ -18,10 +18,23 @@ loaded in Cycle 2.1).
 With **no environment variables set, local behaviour is byte-for-byte identical
 to today** — same server, same Windows auth, same Test/Prod toggle. When the
 new variables are set, the connection string changes and the app can run
-against Azure SQL with the **Test/Prod toggle still working** (both Azure DBs
-are reachable by the `lucidadmin` server admin; the app opens a fresh
-connection per query with the database name in the string — it never does
+against Azure SQL with the **Test/Prod toggle still working** (the app opens a
+fresh connection per query with the database name in the string — it never does
 cross-database queries, so the Azure `USE` / 3-part-name limits don't apply).
+
+**Credential note (reconciled with the Portfolio Manager cloud-migration
+knowledge share, `Undelivered Handoffs/lucidpm-cloud-migration-knowledge-share.md`).**
+For **Cycle 2.2 only** — a local dev app pointed at Azure SQL for the Gate 2
+smoke test — using the `lucidadmin` server login is acceptable and expedient
+(it reaches both `TenantCRM` and `TenantCRM_Test`, so the toggle just works).
+The PM migration established that the **cloud deployment must not use an admin
+account**: Stage 3+ switches to a dedicated **contained SQL user** with only the
+roles LucidPM needs. Contained users are per-database, so keeping the Test/Prod
+toggle in a cloud build then means provisioning the **same contained
+username + password in both `TenantCRM` and `TenantCRM_Test`**. This handoff
+changes no code for that (user/password are already env-driven) — it is a
+provisioning + `.env` step for the later cycle, flagged here so the "toggle
+stays in cloud" decision carries its real cost.
 
 **Files that change:**
 
@@ -43,9 +56,13 @@ This handoff is **connection plumbing only**. It does **not**:
 - Move the Fernet key out of `AppSettings` — that is **Cycle 0.4**, a separate
   handoff. `get_fernet` / `encrypt_value` / `decrypt_value` are untouched here.
 - Move the lease-document storage root out of SQL — **Cycle 5.1**.
-- Add connection retry-on-resume logic for Azure serverless auto-pause — if
-  Cycle 2.2 shows the 30–60 s cold-resume is a problem, that is a follow-up.
-  (A `LUCIDPM_SQL_LOGIN_TIMEOUT` knob is included, default 30 s.)
+- Add connection retry-on-resume logic for Azure serverless auto-pause. Only a
+  `LUCIDPM_SQL_LOGIN_TIMEOUT` knob is included here (default 30 s; the Azure
+  example sets 60 s). The PM knowledge share treats *"graceful behavior when a
+  dependent Azure SQL database is paused"* as a **required** validation gate
+  from lived experience, so a retry-on-resume wrapper is **the expected next
+  cycle after 2.2**, not a maybe — Cycle 2.2 must capture the cold-resume
+  measurement (see the Validation Checklist) as its input.
 - Add `requirements.txt` / `pyproject.toml` — **Cycle 0.1**. This handoff adds
   **no new package dependency** (the `.env` loader is hand-rolled, ~12 lines).
 - Change any SQL, any query, any schema, or any page's behaviour.
@@ -226,6 +243,14 @@ TEST_DB_NAME = os.getenv("LUCIDPM_TEST_DB", "TenantCRM_Test")
 # Leave unset for local dev and for cloud dev where you still want the toggle
 # (both Azure DBs are reachable). Set it only for a locked-down deployment.
 SINGLE_DB_NAME = os.getenv("LUCIDPM_SINGLE_DB") or None
+
+# Deployment environment marker. Unset (or "local") for local dev; "cloud" when
+# running inside Azure Container Apps. Nothing branches on this yet — it is the
+# single source of truth that Stage 5.3 (Entra ID auth) will gate the
+# X-MS-CLIENT-PRINCIPAL-NAME header-trust on. Kept separate from
+# LUCIDPM_SINGLE_DB deliberately: "which database(s)" and "am I in the cloud"
+# are orthogonal (per the PM cloud-migration knowledge share).
+LUCIDPM_ENV = (os.getenv("LUCIDPM_ENV", "local").strip().lower() or "local")
 
 _SQL_AUTH = os.getenv("LUCIDPM_SQL_AUTH", "windows").strip().lower()   # "windows" | "sql"
 _SQL_USER = os.getenv("LUCIDPM_SQL_USER", "")
@@ -412,6 +437,13 @@ it does locally** — `use_test_db` flips, `db` returns the Test or Prod name,
 The status dot and `AppState.db_label` above it already render from Vars and
 need no change. Do not add a new banner.
 
+**Known cosmetic nit, deliberately left:** the status dot at `sidebar.py:307`
+binds to `AppState.use_test_db` directly, which defaults `True`, so in
+single-DB-lock mode the pill shows a **green dot next to "PRODUCTION"**. This is
+harmless — single-DB lock is an optional, not-yet-used deployment mode and is
+not exercised in Cycle 2.2. **Do not "fix" it** by rewiring the dot or adding a
+Var; if it ever matters it is a one-line `rx.cond` in a later touch.
+
 ### Step 5 — `.env.example`
 
 **Replace the entire file contents with:**
@@ -429,9 +461,17 @@ need no change. Do not add a new banner.
 #LUCIDPM_SQL_SERVER=lucidpm-sql-24899.database.windows.net
 
 # Auth mode: "windows" (integrated, local only) or "sql" (username/password).
+# For "sql": Cycle 2.2 smoke test may use the lucidadmin server login. The
+# cloud build (Stage 3+) MUST use a dedicated contained, non-admin user
+# (provisioned in BOTH databases if the Test/Prod toggle is kept) — see the
+# PM cloud-migration knowledge share.
 #LUCIDPM_SQL_AUTH=windows
 #LUCIDPM_SQL_USER=lucidadmin
 #LUCIDPM_SQL_PASSWORD=
+
+# Deployment marker: unset / "local" for local dev, "cloud" inside Azure
+# Container Apps. Not read by anything yet — reserved for Stage 5.3 Entra auth.
+#LUCIDPM_ENV=local
 
 # ODBC encryption. Local default yes/yes works for SQL Express with a self-
 # signed cert. For Azure use yes / no (real managed certificate).
@@ -474,8 +514,9 @@ need no change. Do not add a new banner.
 | `get_fernet`, `encrypt_value`, `decrypt_value` | Fernet-key relocation is Cycle 0.4, a separate handoff |
 | `send_email` and its local `import os` | Unrelated; the shadow is harmless |
 | `toggle_db`'s state-import block and every `yield ...reload_on_db_change` | Only the two-line lock guard is added at the top |
-| The status dot / `db_label` text in the sidebar | Renders fine from Vars in both modes |
+| The status dot / `db_label` text in the sidebar | `db_label` already updates via the Step 3 Var change; the dot color binding stays as-is (green-in-single-DB-mode is an accepted cosmetic nit, see Step 4) — no new Var, no `rx.cond` on the dot |
 | `rxconfig.py` | No `env_file` wiring needed — `state.py` loads `.env` itself |
+| `LUCIDPM_ENV` — read it, branch on it, or wire it to anything | It is defined as an inert marker for **Stage 5.3** (Entra header-trust). This handoff only *declares* it in the config block + `.env.example`. Nothing reads it yet — leave it that way |
 | Any SQL, schema, or DB object | Connection-string change only |
 
 ---
@@ -499,6 +540,11 @@ need no change. Do not add a new banner.
       password. `git status` shows `.env` as **untracked/ignored**, not staged.
 - [ ] `reflex run` connects (first query may take up to ~60 s if the Azure DB
       was auto-paused; subsequent ones are fast).
+- [ ] **Cold-resume measurement (Gate 2 / next-cycle input).** With the Azure
+      DB confirmed auto-paused (idle > 60 min, or check the portal), start the
+      app and time the first data-bearing page to usable. Record the number and
+      whether a wrong/timeout error was shown mid-wait. This is the evidence for
+      whether the retry-on-resume wrapper is needed immediately.
 - [ ] Sidebar still shows `TEST` + the **Switch** button.
 - [ ] Tenant list, lease list, rent roll, property financials, analytics all
       render the Azure **Test** data (row counts match Cycle 2.1's verify:
@@ -544,18 +590,17 @@ Per `CLAUDE.md`: edit the live files in place, no `_vN` copies.
 
 ### Also (housekeeping, not blocking)
 
-`.gitignore` ignores `.env*` but **not** `*.sql`. The Cycle 2.1 dumps
-`db/TenantCRM_full.sql` and `db/TenantCRM_Test_*.sql` (real tenant PII) are
-untracked and must not be committed. Add to `.gitignore`:
-
-```
-/db/TenantCRM_full.sql
-/db/TenantCRM_Test_full.sql
-/db/TenantCRM_azure.sql
-/db/*_verify.sql
-```
-
-(Do not add a blanket `*.sql` — `db/history/*.sql` is tracked and must stay.)
+- **`.gitignore` — already done** (commit `1de81d2`): `/db/TenantCRM*.sql`
+  covers the Cycle 2.1 PII dumps (`TenantCRM_full.sql`, `TenantCRM_Test_*.sql`,
+  `*_verify.sql`, the future `TenantCRM_azure.sql`). `db/history/*.sql` stays
+  tracked. No further `.gitignore` change needed here.
+- **`.dockerignore` — forward reference, Cycle 3.1.** The repo has no
+  `.dockerignore` yet. When one is added for the container build it must exclude
+  the same things this handoff keeps out of git — `.env` / `.env.*`, `*.key` /
+  `*.pem` / `*.pfx`, `/db/TenantCRM*.sql`, `.web/`, `.venv/`, tests, and
+  `Undelivered Handoffs/` / `Completed Handoffs/` — so tenant PII and secrets
+  never land in an image layer (per the PM cloud-migration knowledge share's
+  build-artifact exclusion list).
 
 ---
 
