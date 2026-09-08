@@ -1,13 +1,13 @@
 # LucidoPM — ChatGPT Handoff 59
 *Env-aware API base URL — retire the hardcoded `http://localhost:8000` in PDF/report links*
-*Prepared: 2026-09-07 · revised 2026-09-07 (Codex pre-impl review: `communications_report.py` is a dead orphan — dropped from edit scope; override/trailing-slash verified as an isolated subprocess check; acceptance = base+PDF, unrelated warnings recorded separately; regression grep tightened to `localhost:8000/api`)*
+*Prepared: 2026-09-07 · revised 2026-09-07 (Codex pre-impl review: `communications_report.py` is a dead orphan — dropped from edit scope; override/trailing-slash verified as an isolated subprocess check; acceptance = base+PDF, unrelated warnings recorded separately; regression grep tightened to `localhost:8000/api`) · revised 2026-09-07 pt.2 (count is 7 code-changed page modules + 1 comment-only; Section D grep must exclude the un-archived orphan)*
 *Azure Migration — Stage 3 prerequisite (does not need Azure)*
 
 ---
 
 ## What This Is
 
-Eight live page modules build absolute download URLs to the Reflex **backend**
+Seven live page modules build absolute download URLs to the Reflex **backend**
 by hardcoding `http://localhost:8000`. That string is correct only on the dev
 laptop with the backend on its default port. It is wrong the moment the app
 runs on any other port (`reflex run --backend-port 8002` — used for the H58
@@ -15,8 +15,8 @@ Azure smoke test) and **completely broken in a container** (Stage 3), where the
 browser reaches the app through one HTTPS ingress hostname and there is no
 `localhost:8000`. Every "Download PDF" / "Open report" link 404s.
 
-*(A ninth file, `pages/communications_report.py`, has the same literal but is a
-dead orphan — not imported, not routed, no `@rx.page`; `/communications` and
+*(An eighth file, `pages/communications_report.py`, has the same literal but is
+a dead orphan — not imported, not routed, no `@rx.page`; `/communications` and
 `/communications-report` are both served by `pages/communications.py`. It is
 **not** edited here; it goes to `Archived Versions/` in the housekeeping step.)*
 
@@ -49,9 +49,10 @@ file is already being touched.
   different origins in dev; an absolute backend URL is required. The helper
   keeps them absolute, just not hardcoded.
 
-**Files that change:** `LucidPM/state.py` (+1 helper) and 8 live page modules
-under `LucidPM/pages/` (import + f-string swaps, ~11 lines total), plus a
-comment-only touch in `pages/lease_documents.py`.
+**Files that change:** `LucidPM/state.py` (+1 helper), **7** live page modules
+under `LucidPM/pages/` with code changes (import + f-string swaps, ~11 lines
+total), and one comment-only touch in `pages/lease_documents.py`. (The dead
+orphan `pages/communications_report.py` is archived, not edited.)
 
 ---
 
@@ -71,7 +72,7 @@ comment-only touch in `pages/lease_documents.py`.
 | `pages/tenants.py` | 704 | `application_report_url` | `/api/application-report-pdf` | ✅ Steps 8 + 10 |
 | `pages/communications_report.py` | 321 | `pdf_url` | `/api/communications-pdf` | ❌ dead orphan → archive (housekeeping) |
 
-All eight in-scope files already have `import reflex as rx` and a
+All seven in-scope page modules already have `import reflex as rx` and a
 `from LucidPM.state import …`. Each site is a plain Python f-string inside an
 `@rx.var` body — evaluated on the backend, rendered by the frontend as an `href`.
 
@@ -117,7 +118,7 @@ def api_base_url() -> str:
     return rx.config.get_config().api_url.rstrip("/")
 ```
 
-### Steps 2–8 — the 8 live page modules
+### Steps 2–8 — the 7 live page modules (code)
 
 For each file: (a) add `api_base_url` to its `from LucidPM.state import …`
 line/block, (b) replace `http://localhost:8000` with `{api_base_url()}` in the
@@ -381,7 +382,7 @@ in a browser — so verify the override **here**, not in the running app.
 ### B — browser checks on real ports (default 3000/8000)
 
 - [ ] `reflex run` compiles; no import error for the new `api_base_url` symbol
-      in any of the 8 pages.
+      in any of the 7 edited pages.
 - [ ] Rent Roll → "Download PDF" opens the rent-roll PDF; the URL bar shows
       `http://localhost:8000/api/rent-roll-pdf?...` — character-for-character
       what it was before this handoff.
@@ -402,11 +403,16 @@ in a browser — so verify the override **here**, not in the running app.
 
 - [ ] Toggle Test/Prod, re-open one report — the `&db=` value in the URL still
       follows the toggle.
-- [ ] `grep -rn "localhost:8000/api" LucidPM/` returns **only** `_vN` / numbered
-      siblings — zero hits in `state.py`, `LucidPM.py`, or the 8 live pages.
-      (Plain `"localhost:8000"` without `/api` still legitimately appears once,
-      in `state.api_base_url`'s docstring — that's the allowed documented
-      default, not URL construction.)
+- [ ] `grep -rn "localhost:8000/api" LucidPM/pages/ LucidPM/state.py LucidPM/LucidPM.py`
+      → zero hits in the 7 edited pages, `state.py`, and `LucidPM.py`. Two
+      allowed matches remain and are expected:
+      - `pages/communications_report.py` — the dead orphan, still has the
+        literal **until the housekeeping archive step runs** (that step and this
+        check are independent; if archival is done first, this file is gone too).
+      - every `_vN` / numbered sibling under `pages/` (`proforma_1.py`, etc.).
+      A broader `grep -rn "localhost:8000" …` also matches
+      `state.api_base_url`'s docstring (bare host, no `/api`) — that's the
+      documented default, not URL construction.
 
 ### Acceptance
 
@@ -438,7 +444,7 @@ Per `CLAUDE.md`: edit the live files in place, no `_vN` copies.
 - **`pages/communications_report.py` → `Archived Versions/`.** It is a dead
   orphan (see *Current State*); this handoff establishes that. Move it and
   commit separately, e.g. `Archive orphaned communications_report.py (dead route)`.
-- **`_vN` siblings of the 8 touched files → `Archived Versions/`.** Large sibling
+- **`_vN` siblings of the 7 edited files → `Archived Versions/`.** Large sibling
   sets under `LucidPM/pages/` (`proforma_1.py … proforma_6_6.py`,
   `rent_roll_3.py … rent_roll_8_FIXED.py`, `property_financials_8.py`,
   `property_financials _7.py` (note the space), `leases_expiring_4.py … _7.py`,
@@ -470,8 +476,8 @@ Dev app: http://localhost:3000 (frontend) / :8000 (backend)  — api_base_url() 
 
 ---
 
-*One helper in `state.py`, an import line + an f-string swap in 8 live pages,
-one comment, one bonus literal fix; one dead orphan dropped from scope. Local
-behaviour byte-identical (Reflex's `api_url` default is the same string that was
-hardcoded). Unblocks Stage 3.1 — a containerised app can point every download
-link at its real ingress host with one env var.*
+*One helper in `state.py`, an import line + an f-string swap in 7 page modules,
+one comment-only touch, one bonus literal fix; one dead orphan dropped from
+scope. Local behaviour byte-identical (Reflex's `api_url` default is the same
+string that was hardcoded). Unblocks Stage 3.1 — a containerised app can point
+every download link at its real ingress host with one env var.*
