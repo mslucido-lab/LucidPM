@@ -113,9 +113,23 @@ everything ≈ 6–12 months.
   only, preserving password bytes exactly; (d) the validation checklist is split into **Part A (H58
   acceptance, blocking, no Azure needed)** and **Part B (Cycle 2.2 / Gate 2 data capture, non-blocking)** —
   a slow/failed cold-resume feeds a follow-up handoff, doesn't reopen H58; (e) Cycle 2.2 is run with
-  **process env vars in one shell** (or a `Start-LucidPM-Azure.ps1`), not a persistent repo-root `.env` that
-  every `reflex run` from the checkout would pick up. H58 is now ready to implement.
-- **Next:** implement Handoff 58 → then Cycle 2.2 / Gate 2 falls out of its Part B Azure run.
+  **process env vars in one shell**, not a persistent repo-root `.env` that every `reflex run` from the
+  checkout would pick up. H58 is now ready to implement.
+- **2026-09-07 — Handoff 58 IMPLEMENTED + Claude-reviewed + committed.** `b47b6f8` (impl: all 6 steps),
+  `d18a256` (19 `state_*.py` → `Archived Versions/`), `67b7e91` (review follow-ups). Doc → `Completed Handoffs/`.
+  `docs/H58-validation.md` records Part A pass (default Windows-auth path, fail-fast `ConfigError` × all
+  branches, `.env` quote handling, single-DB lock, Step-6 label — all green in headless Chromium + subprocess
+  checks). Claude review: sound, no blocking issues; Windows-auth default conn string verified byte-equivalent
+  (ODBC ignores segment order); `pyodbc 5.3.0` `connect(timeout=)` confirmed to be the *login* timeout (no
+  query-timeout regression). Applied findings: `.env.example` now documents "full-line comments only" (an
+  inline `# …` becomes part of the value → `ConfigError`); dropped a reference to a `Start-LucidPM-Azure.ps1`
+  that was never created (inline `$env:` recipe kept). Deferred/tracked: the `sql`-auth connection string is
+  **still untested against a live server** (→ Cycle 2.2, then re-check on unixODBC at Cycle 3.1 — the
+  `UID={}`/`PWD={}` brace-escaping is the suspect if login fails); `tenants.py:703` `self.db or "TenantCRM"`
+  stale literal (→ next `tenants.py` touch); hardcoded `http://localhost:8000` in `tenants.py:704` +
+  `lease_package_builder.py` 364/370/1825 (→ Stage 3 blocker, now in `CLAUDE.md` standing backlog + Cycle 3.1).
+- **Next:** Cycle 2.2 / Gate 2 — run H58's Part B checklist against Azure SQL (process env vars in one shell,
+  ports 3002/8002), capture cold-resume-from-auto-pause latency as the retry-wrapper input.
   Stage 0 code prep 0.1 / 0.2 / 0.4 has no Azure dependency and can run in parallel.
 
 ---
@@ -139,16 +153,16 @@ leaves local behaviour unchanged when no cloud env vars are set.
 - **Done when:** file selection works with zero Windows/PowerShell dependency.
 - Risk: medium — downstream code assumes a local absolute path came back.
 
-### Cycle 0.3 — Connection config: env-driven + SQL auth *(Handoff 58 written 2026-09-06, not started)*
-- `state.py` `get_conn()` (~lines 26–35) uses `Trusted_Connection=yes` (Windows integrated auth). **Azure SQL
-  does not support that** — hard blocker. Add a SQL-authentication branch (and leave room for Entra ID auth).
-- Make server / database / auth-mode read from environment variables; current hardcoded values
-  (`localhost\SQLEXPRESS`, `TenantCRM`, `TenantCRM_Test` in `state.py` lines 11–13) become the local defaults.
-- **Decision:** the Prod/Test switch is currently a runtime UI toggle (`AppState.use_test_db`, defaults to
-  Test). Recommendation: local keeps the toggle; cloud builds pick the database at deploy time via env var and
-  hide the toggle (gate on something like `LUCIDPM_ENV=cloud`).
-- **Done when:** no env vars → identical local behaviour; env vars → override cleanly.
-- Risk: medium — the toggle is read across the app; the gating mechanism must be clean.
+### Cycle 0.3 — Connection config: env-driven + SQL auth — ✅ DONE 2026-09-07 (Handoff 58, `b47b6f8`)
+- `state.get_conn()` now builds the connection string from env vars (`LUCIDPM_SQL_SERVER` / `_PROD_DB` /
+  `_TEST_DB` / `_AUTH` / `_USER` / `_PASSWORD` / `_ENCRYPT` / `_TRUST_CERT` / `_LOGIN_TIMEOUT`), defaults =
+  today's hardcoded values → Windows-auth path byte-equivalent. `sql` auth branch added (`UID`/`PWD`
+  brace-escaped). Dependency-free `.env` loader (`setdefault`, so real/injected env wins).
+- **Decision resolved:** the Test/Prod toggle **stays** in both local and cloud (single-user tool). Optional
+  `LUCIDPM_SINGLE_DB=<name>` locks to one DB + hides the Switch button for a future multi-user deployment.
+  `LUCIDPM_ENV` (`local`|`cloud`) added as an inert marker for the Stage 5.3 Entra header-trust gate.
+- Invalid config **fails fast** with a named `ConfigError` at import — no silent degrade to Windows auth.
+- **Outstanding:** the `sql`-auth path is unverified against a live SQL Server — that is Cycle 2.2.
 
 ### Cycle 0.4 — Fernet key out of the database *(handoff)*
 - `settings.py` (~lines 35–57) stores the Fernet key (`LocalEncryptionKey`) in the same `AppSettings` table as

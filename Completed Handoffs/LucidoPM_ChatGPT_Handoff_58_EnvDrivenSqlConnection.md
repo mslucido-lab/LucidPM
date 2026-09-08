@@ -733,12 +733,16 @@ Per `CLAUDE.md`: edit the live files in place, no `_vN` copies.
    pick up):
 
    ```powershell
-   $env:LUCIDPM_SQL_SERVER   = "lucidpm-sql-24899.database.windows.net"
-   $env:LUCIDPM_SQL_AUTH     = "sql"
-   $env:LUCIDPM_SQL_USER     = "lucidadmin"
-   $env:LUCIDPM_SQL_PASSWORD = "<paste>"
-   $env:LUCIDPM_SQL_TRUST_CERT = "no"
-   $env:LUCIDPM_SQL_LOGIN_TIMEOUT = "60"
+   $env:LUCIDPM_SQL_SERVER   = 'lucidpm-sql-24899.database.windows.net'
+   $env:LUCIDPM_SQL_AUTH     = 'sql'
+   $env:LUCIDPM_SQL_USER     = 'lucidadmin'
+   $env:LUCIDPM_SQL_TRUST_CERT    = 'no'
+   $env:LUCIDPM_SQL_LOGIN_TIMEOUT = '60'
+   # Prompt for the password — never paste it as a quoted literal: PowerShell
+   # expands $ and backticks inside "..." and would silently alter it. This
+   # also keeps it out of shell history.
+   $sec = Read-Host 'SQL password' -AsSecureString
+   $env:LUCIDPM_SQL_PASSWORD = [System.Net.NetworkCredential]::new('', $sec).Password
    & .\.venv\Scripts\reflex.exe run --frontend-port 3002 --backend-port 8002
    ```
 
