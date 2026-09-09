@@ -1,6 +1,7 @@
 # LucidoPM — ChatGPT Handoff 60
 *Connection retry-on-resume for Azure SQL serverless auto-pause*
-*Prepared: 2026-09-08 · Azure Migration — the expected follow-up after Handoff 58 / Cycle 2.2*
+*Prepared: 2026-09-08 · revised 2026-09-08 (Codex pre-impl review: narrow to an explicit transient set — no blanket `08*`; re-raise the FIRST transient error; checklist expects 2 retry log lines not 3)*
+*Azure Migration — the expected follow-up after Handoff 58 / Cycle 2.2*
 
 ---
 
@@ -100,11 +101,21 @@ sites reach them indirectly. **None change.**
 - `timeout=N` on `connect` is honoured as the login timeout (a bad host with
   `timeout=3` returns in ~3 s).
 
-Resume-from-pause presents as SQLSTATE `HYT00` (login timeout while the gateway
-holds the connection) or `08001` / `08S01` (TCP-level timeout), and if the
-resume is slow, native `40613` ("Database '…' … is not currently available").
-An auth failure is SQLSTATE `28000` (native `18456`); a missing/ungranted
-database is `42000` (native `4060`) — **neither is retried.**
+Resume-from-pause presents as SQLSTATE `HYT00` / `HYT01` (login timeout while
+the gateway holds the connection open waiting for the DB to wake), `08S01`
+(communication link failure mid-handshake), or — if the gateway answers before
+the DB is ready — native `40613` ("Database '…' … is not currently available").
+Those, plus the Azure throttling/resource native codes, are the **only** things
+retried.
+
+Everything else fails on the first attempt, including:
+- SQLSTATE `28000` (native `18456`) — auth failure / wrong password.
+- SQLSTATE `42000` (native `4060`) — database missing or not granted to the login.
+- **Bare `08001`** — client could not establish a connection: wrong server
+  name, DNS failure, firewall block, port closed. This is *not* a resume; a
+  paused Azure DB still has a reachable gateway. Retrying it would just burn
+  `retries × login_timeout` seconds on a dead endpoint. (This is the change
+  from the first draft, which retried all `08*`.)
 
 ---
 
@@ -225,20 +236,24 @@ Notes:
 `_odbc_brace`):
 
 ```python
-# SQLSTATE classes and native error numbers that indicate a transient /
-# resume-in-progress condition worth retrying. Deliberately excludes 28000
-# (auth failure / 18456) and 42000 (4060, database not grantable).
-_TRANSIENT_SQLSTATE_PREFIXES = ("08", "HYT")
+# The ONLY connect failures worth retrying: an Azure serverless DB resuming
+# from auto-pause, or Azure throttling/resource limits. Matched exactly — a
+# bare 08001 (unreachable host / DNS / firewall), 28000 (auth), and 4060
+# (no such database / no grant) are all permanent and must fail on attempt 1.
+_TRANSIENT_SQLSTATES = frozenset({"HYT00", "HYT01", "08S01"})
 _TRANSIENT_NATIVE_CODES = (
-    "40613",  # database is not currently available (still resuming)
-    "40197", "40501", "49918", "49919", "49920",  # service busy / throttling
-    "10928", "10929", "10053", "10054", "10060", "4221",
+    "40613",   # "Database '…' on server '…' is not currently available" (resuming)
+    "40143",   # connection terminated (transient)
+    "40197", "40501", "40540",          # service busy / error processing request
+    "49918", "49919", "49920",          # cannot process request / too many operations
+    "10928", "10929",                   # resource governance limits
+    "4221",                             # login to read-secondary failed (replica warm-up)
 )
 
 
 def _is_transient_connect_error(exc: pyodbc.Error) -> bool:
     sqlstate = (exc.args[0] if exc.args else "") or ""
-    if sqlstate.startswith(_TRANSIENT_SQLSTATE_PREFIXES):
+    if sqlstate in _TRANSIENT_SQLSTATES:
         return True
     text = str(exc)
     return any(f"({code})" in text for code in _TRANSIENT_NATIVE_CODES)
@@ -249,32 +264,47 @@ def _connect_with_resume_retry(conn_str: str, target_db: str) -> pyodbc.Connecti
 
     An Azure serverless database that has auto-paused takes ~20-60 s to resume;
     the first connect fails with a login timeout or 'not currently available'.
-    Non-transient errors (bad password, missing database, …) are re-raised on
-    the first attempt. With LUCIDPM_SQL_CONNECT_RETRIES=0 this is a plain
-    single-attempt connect.
+    Non-transient errors (bad password, missing database, wrong host, …) are
+    re-raised on the first attempt. If every attempt is transient and the
+    budget runs out, the FIRST transient error is raised (the last attempt's
+    error is kept as its `__context__` for diagnostics). With
+    LUCIDPM_SQL_CONNECT_RETRIES=0 this is a plain single-attempt connect.
     """
     attempts = _SQL_CONNECT_RETRIES + 1
+    first_transient_exc = None   # the error we re-raise if the budget runs out
     for attempt in range(1, attempts + 1):
         try:
             return pyodbc.connect(conn_str, timeout=_SQL_LOGIN_TIMEOUT)
         except pyodbc.Error as exc:
-            if attempt >= attempts or not _is_transient_connect_error(exc):
+            if not _is_transient_connect_error(exc):
                 raise
+            if first_transient_exc is None:
+                first_transient_exc = exc
+            if attempt >= attempts:
+                raise first_transient_exc
             wait = _SQL_RETRY_BACKOFF * attempt
             print(
                 f"[state.get_conn] transient DB connect error for {target_db!r} "
-                f"({(exc.args[0] if exc.args else '?')}); attempt {attempt}/{attempts}, "
-                f"retrying in {wait}s — Azure serverless DB is probably resuming.",
+                f"(SQLSTATE {exc.args[0] if exc.args else '?'}); attempt "
+                f"{attempt} of {attempts} failed, retrying in {wait}s "
+                f"— Azure serverless DB is probably resuming.",
                 file=sys.stderr,
             )
             time.sleep(wait)
-    # unreachable — the loop either returns or raises
-    raise RuntimeError("unreachable")
+    raise AssertionError("unreachable: the retry loop must return or raise")
 ```
 
 Notes:
-- The `print(..., file=sys.stderr)` line is intentional: Cycle 2.2 needs to
-  *see* the resume happening to record its duration. Dependency-free.
+- **Re-raises the first transient error, not the last.** When the budget is
+  exhausted, `raise first_transient_exc` inside the `except` block re-raises the
+  original object; Python attaches the final attempt's error as
+  `first_transient_exc.__context__` automatically, so nothing is lost. When
+  `retries=0`, `first_transient_exc is exc` and this is a plain re-raise.
+- **Only the last attempt has no log line.** With `retries=2` (3 attempts) you
+  get **two** `[state.get_conn]` lines — after attempts 1 and 2 — then attempt 3
+  raises. `retries=N` → N log lines.
+- The `print(..., file=sys.stderr)` is intentional: Cycle 2.2 needs to *see* the
+  resume happening to record its duration. Dependency-free.
 - `target_db` is passed in only for that log line.
 - Worst case with defaults + `LUCIDPM_SQL_LOGIN_TIMEOUT=60`:
   3 attempts × ~60 s + (3 s + 6 s) ≈ 189 s. That is a once-per-idle-period
@@ -348,24 +378,46 @@ after `#LUCIDPM_SQL_LOGIN_TIMEOUT=60`, add:
 - [ ] `LUCIDPM_SQL_CONNECT_RETRIES=abc` → startup stops with a named
       `ConfigError`. `=-1` → same. Then unset.
 
-### B — transient path, simulated (no Azure needed)
+### B — predicate + loop, isolated subprocess checks (no Azure, no DB needed)
 
-- [ ] Point at an unroutable host to force a fast timeout, e.g.
-      `LUCIDPM_SQL_SERVER=10.255.255.1,14330`, `LUCIDPM_SQL_AUTH=sql`,
-      `LUCIDPM_SQL_USER=x`, `LUCIDPM_SQL_PASSWORD=y`,
-      `LUCIDPM_SQL_LOGIN_TIMEOUT=3`, `LUCIDPM_SQL_CONNECT_RETRIES=2`,
-      `LUCIDPM_SQL_RETRY_BACKOFF=1`.
-      → three `[state.get_conn] transient DB connect error …` lines (attempts
-      1/3, 2/3), ~1 s then ~2 s apart, then the **original** `pyodbc` error is
-      raised (not swallowed, not wrapped).
-- [ ] Same but `LUCIDPM_SQL_CONNECT_RETRIES=0` → one attempt, immediate raise,
-      no retry line (pre-H60 behaviour).
+Do these as one-off `python -c` / short scripts against `LucidPM.state`
+(the H58/H59 pattern), feeding synthetic `pyodbc.OperationalError` objects and
+monkeypatching `pyodbc.connect`.
 
-### C — non-transient path fails fast (no Azure needed)
+- [ ] **`_is_transient_connect_error`** returns:
+      - `True` for `OperationalError("HYT00", "...Login timeout expired...")`,
+        `OperationalError("HYT01", "...")`, `OperationalError("08S01", "...")`,
+        and `OperationalError("HY000", "...is not currently available. (40613)")`.
+      - `False` for `OperationalError("08001", "...TCP Provider... (258)")`
+        (bare 08001 — unreachable host), `OperationalError("28000", "...Login
+        failed... (18456)")`, and `OperationalError("42000", "...Cannot open
+        database... (4060)")`.
+- [ ] **`_connect_with_resume_retry`**, monkeypatching `pyodbc.connect`:
+      - Always raises `OperationalError("HYT00", ...)`, `retries=2`,
+        `backoff=1` → exactly **two** `[state.get_conn]` stderr lines ("attempt
+        1 of 3", "attempt 2 of 3"), ~1 s then ~2 s apart, then it raises — and
+        the raised exception **is the first one** (`raised is first_call_exc`,
+        or compare `.args`), with the final attempt available as
+        `raised.__context__`.
+      - Raises `OperationalError("HYT00", ...)` twice then returns a sentinel
+        object → returns the sentinel (retry recovered), one log line.
+      - Raises `OperationalError("28000", ...)` → raises immediately, **no** log
+        line, **no** `time.sleep` (patch `time.sleep` to assert it isn't
+        called).
+      - `retries=0` → `pyodbc.connect` called once, immediate raise, no log line.
+- [ ] `LUCIDPM_SQL_CONNECT_RETRIES=abc` → startup stops with a named
+      `ConfigError`. `=-1` → same. `LUCIDPM_SQL_RETRY_BACKOFF=x` → same.
+
+### C — non-transient path fails fast against a real server (no Azure needed)
 
 - [ ] Reachable server (local `localhost\SQLEXPRESS`), `LUCIDPM_SQL_AUTH=sql`
-      with a **wrong password** → fails on the first attempt, **no retry
-      line**, error raised promptly (SQLSTATE `28000` is not transient).
+      with a **wrong password** → the app fails to start / a query errors on the
+      first attempt, **no `[state.get_conn]` line**, error raised promptly
+      (SQLSTATE `28000` is not transient).
+- [ ] `LUCIDPM_SQL_SERVER=10.255.255.1,14330`, `LUCIDPM_SQL_LOGIN_TIMEOUT=3`,
+      `LUCIDPM_SQL_CONNECT_RETRIES=2` → **no retry** (bare `08001`), one ~3 s
+      attempt then raise. Confirms the narrowed predicate: an unreachable host
+      is not treated as a resume.
 
 ### D — real resume (Cycle 2.2, against Azure SQL — records the number)
 
@@ -417,8 +469,10 @@ Azure (Cycle 2.2): lucidpm-sql-24899.database.windows.net, serverless auto-pause
 
 ---
 
-*Two stdlib imports, two validated config vars, one transient-error predicate,
-one retry loop around the single `pyodbc.connect` call. Zero behaviour change
-when the database answers on the first attempt. Auth and "no such database"
-errors still fail immediately. Turns the post-idle "broken page, refresh
-yourself" into a slow-but-successful first load.*
+*Two stdlib imports, two validated config vars, one exact-match transient
+predicate, one retry loop around the single `pyodbc.connect` call. Zero
+behaviour change when the database answers on the first attempt. Auth, "no such
+database", and unreachable-host errors all still fail on attempt 1; only a
+resume/throttle signature retries, and the first such error is what surfaces.
+Turns the post-idle "broken page, refresh yourself" into a slow-but-successful
+first load.*
