@@ -1,8 +1,6 @@
 """
 Lucido Property Manager - Reflex App
 Entry point: registers all pages and shared app config.
-
-Patch v34.2: adds native attachment file picker endpoint and preserves Communications Hub routes.
 """
 
 import datetime
@@ -53,48 +51,6 @@ def _standalone_state(state_cls):
         node = node.substates[part]
     return node
 
-
-@api.get("/api/pick-files")
-async def pick_files():
-    """Open native Windows file picker via PowerShell."""
-    import subprocess
-    import json
-    from fastapi.responses import JSONResponse
-
-    ps_script = """
-Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.OpenFileDialog
-$defaultDir = 'C:\\Dell Inspirion\\TenantCRM\\LeaseDocuments\\Generated'
-if (Test-Path $defaultDir) {
-    $dialog.InitialDirectory = $defaultDir
-}
-$dialog.Filter = 'PDF Files (*.pdf)|*.pdf|All Files (*.*)|*.*'
-$dialog.Multiselect = $true
-$dialog.Title = 'Select files to attach'
-$dialog.TopMost = $true
-$result = $dialog.ShowDialog()
-if ($result -eq 'OK') {
-    $dialog.FileNames | ConvertTo-Json
-} else {
-    '[]'
-}
-"""
-    try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        output = result.stdout.strip()
-        if not output or output == "[]":
-            paths = []
-        else:
-            parsed = json.loads(output)
-            paths = parsed if isinstance(parsed, list) else [parsed]
-        return JSONResponse({"paths": paths})
-    except Exception as ex:
-        return JSONResponse({"paths": [], "error": str(ex)})
 
 def _build_rent_roll_pdf_bytes(as_of: datetime.date, prop_filter: str, basis: str, db: str) -> bytes:
     fixed_term_types = {"fixed term", "option term", "multi-year", "multi year"}

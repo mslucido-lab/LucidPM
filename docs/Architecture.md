@@ -9,7 +9,7 @@ LucidPM is a [Reflex](https://reflex.dev) app: pure-Python UI code compiles to a
 `LucidPM/LucidPM.py` is the app's entry point. It:
 
 1. Imports every page module and its associated state class.
-2. Creates a raw `FastAPI()` instance (`api`) and defines custom routes directly on it with `@api.get(...)` — these sit alongside Reflex's own generated routes for things Reflex doesn't natively do: a native file picker (`/api/pick-files`), and PDF generation/download endpoints (rent roll, proforma, property financials, bank package, communications, leases-expiring, generated lease documents, application reports).
+2. Creates a raw `FastAPI()` instance (`api`) and defines custom routes directly on it with `@api.get(...)` — these sit alongside Reflex's own generated routes for things Reflex doesn't natively do: PDF generation/download endpoints (rent roll, proforma, property financials, bank package, communications, leases-expiring, generated lease documents, application reports). File uploads use Reflex's own `rx.upload` (tenant/communications attachments, lease-template source PDFs, the waiting-list Tally import) — there is no custom upload endpoint.
 3. Builds `app = rx.App(theme=..., api_transformer=api)` — the `api_transformer` mount is how the custom FastAPI routes get merged into Reflex's own backend.
 4. Registers every page with `app.add_page(page_fn, route=..., on_load=State.on_load)`.
 

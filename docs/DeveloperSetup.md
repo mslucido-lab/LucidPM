@@ -58,7 +58,7 @@ When you change a pin, change it in both `requirements.txt` and
 
 ## 4. Document storage
 
-The native file-picker endpoint (`/api/pick-files` in `LucidPM/LucidPM.py`) points at `C:\Dell Inspirion\TenantCRM\LeaseDocuments\Generated` by default — the old dev machine's path, which won't exist here. As of Handoff 49 this is guarded (`Test-Path` check before setting `InitialDirectory`), so it degrades to Windows' own default location instead of erroring; it doesn't point anywhere useful on this machine yet, though. (Note: `tenants.py` also defines a `DEFAULT_ATTACHMENT_FOLDER` constant with the same old path — that one is dead code, never actually referenced, not the source of this behavior.) Making the real storage location configurable, rather than guarded-but-still-hardcoded, remains a future improvement — not done.
+Attachment and source-PDF uploads use Reflex's `rx.upload` browser file input — no native/OS file dialog and no server-side path assumptions. `tenants.py` still defines a `DEFAULT_ATTACHMENT_FOLDER` constant with the old `C:\Dell Inspirion\TenantCRM\LeaseDocuments\Generated` path, but it is dead code and never referenced. Making the lease-document storage root (a separate concern from uploads — see `admin_settings.py` and the seeded value in `lease_documents.py`) properly configurable for cloud remains open in Azure roadmap Stage 5.1.
 
 ## 5. Secrets
 
