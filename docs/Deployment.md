@@ -16,6 +16,7 @@ The current app makes several assumptions that don't hold in a typical cloud hos
 
 - Windows trusted authentication to a local named SQL Server instance (`Trusted_Connection=yes` to `localhost\SQLEXPRESS`)
 - Local disk paths for document storage (`C:\Dell Inspirion\TenantCRM\LeaseDocuments\...`) — as of Handoff 49 this no longer hard-fails when the path doesn't exist, but it's still not a real configurable storage location, which cloud hosting would need
+- ~~The Fernet key for config secrets was stored in `dbo.AppSettings` alongside the ciphertext it protects~~ — moved to the `LUCIDPM_FERNET_KEY` environment variable in Handoff 63; its rotation runbook is pending.
 
 The interactive Windows file picker was retired in Cycle 0.2 / Handoff 62.
 The remaining blockers are not addressed by this foundation session — see `Undelivered Handoffs/Azure Planning` for the plan to resolve them.

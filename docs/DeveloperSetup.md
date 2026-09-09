@@ -62,4 +62,6 @@ Attachment and source-PDF uploads use Reflex's `rx.upload` browser file input �
 
 ## 5. Secrets
 
-No environment variables are required to start the app (see `.env.example`). SMTP credentials and the Anthropic API key are configured from within the running app itself (Admin Settings) and stored encrypted in the database — there's no separate secrets step during setup.
+The app **boots** with no environment variables. But saving or using the SMTP password / Anthropic API key needs **`LUCIDPM_FERNET_KEY`** — the Fernet key that encrypts them (ciphertext lives in `dbo.EmailConfig` / `dbo.AIConfig`; the key used to auto-generate into `dbo.AppSettings` and was moved to the environment in Cycle 0.4 / Handoff 63). Set it in `.env` (see `.env.example`) to a key you generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. The value is comma-separated: the first key encrypts, all keys decrypt — used for rotation (`new,old`) and, during the H63 migration, to decrypt data still encrypted under the old per-database keys.
+
+Tenant SSN/DL fields use a **separate** key, `TENANTCRM_FERNET_KEY` (`pages/tally_import.py`) — unrelated to the above, also env-only.

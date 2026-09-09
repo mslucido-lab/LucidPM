@@ -31,11 +31,10 @@ The app toggles between them at runtime via `AppState.use_test_db`; nearly every
 
 `dbo.SchemaChangeLog` (`ScriptName`, `AppliedOn`, `AppliedBy`, `Notes`) exists in both databases today — any future schema-changing script should keep writing to it; it's genuinely useful, as this reorganization discovered.
 
-## Secrets
+## Secrets and encryption
 
-No environment variables are used. All secrets live encrypted in the database itself:
+The SMTP password and Anthropic API key are stored encrypted (Fernet) in `dbo.EmailConfig.PasswordEncrypted` and `dbo.AIConfig.APIKeyEncrypted`. The key(s) come from the **`LUCIDPM_FERNET_KEY`** environment variable (comma-separated — the first encrypts, all decrypt), not from the database. The app boots without it; only email/AI actions need it. See `.env.example` and `docs/DeveloperSetup.md` §5.
 
-- **Fernet encryption key**: `get_fernet()` in `state.py` reads `AppSettings.LocalEncryptionKey`; if absent, it generates one and persists it back to `AppSettings` on first use. There's no external key to configure — the key lives entirely in whichever database (`TenantCRM` or `TenantCRM_Test`) is active at the time.
-- **SMTP credentials, Anthropic API key**: stored encrypted (via that Fernet key) in `EmailConfig` / `AppSettings`, configured from the running app's Admin Settings page.
+Because the key is now process-wide rather than per-database, a value written under one database decrypts fine against the other — the old `TenantCRM` vs `TenantCRM_Test` cross-key problem is gone. (Historically each DB auto-generated its own key into `AppSettings.LocalEncryptionKey`; Handoff 63's rotation runbook removes that row from both.)
 
-One consequence worth knowing: because the Fernet key is per-database and auto-generated, a value encrypted under `TenantCRM_Test`'s key cannot be decrypted using `TenantCRM`'s key, and vice versa. Restoring/copying data between the two databases needs to account for this.
+Tenant SSN / DL use a separate Fernet key, `TENANTCRM_FERNET_KEY` (`pages/tally_import.py`).

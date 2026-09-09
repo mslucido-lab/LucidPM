@@ -165,9 +165,27 @@ everything ≈ 6–12 months.
   risk low, not medium. Phase 1 deletes the endpoint (the last `subprocess`/PowerShell call in the entry
   module) + fixes `Architecture.md` / `Deployment.md` / `DeveloperSetup.md`. Phase 2 archives `LucidPM.py`'s
   40 `LucidPM_Reflex_*.py` siblings (incremental `_vN` rule).
+- **2026-09-08 — Handoff 63 code implemented; rotation runbook pending** (`Undelivered Handoffs/LucidoPM_ChatGPT_Handoff_63_FernetKeyFromEnv.md`,
+  code complete; Mark rotation runbook pending). Stage 0 / Cycle 0.4 — the last Stage 0 item. `state.get_fernet()` previously read the config-secret
+  Fernet key (`dbo.AppSettings` `'LocalEncryptionKey'`, per-DB, auto-generated) — the same DB it protects the
+  `EmailConfig.PasswordEncrypted` / `AIConfig.APIKeyEncrypted` ciphertext in (roadmap's old `settings.py`
+  pointer was stale — dead module). H63: `get_fernet` → `_fernet()` reads `LUCIDPM_FERNET_KEY` from env,
+  comma-separated → `MultiFernet` (first encrypts, all decrypt). Fail-fast `ConfigError` when unset OR
+  all-whitespace/separators (review pt 2 — was an `IndexError`). Lazy so the app still boots. Mirrors the
+  existing `tally_import.py` `TENANTCRM_FERNET_KEY` precedent (separate SSN/DL key, left alone).
+  **Migration is a key ROTATION** (review pt 3), not a straight move: generate a NEW key,
+  `LUCIDPM_FERNET_KEY=<new>,<old-prod>[,<old-test>]`, re-save the 4 config secrets (SMTP pw + Anthropic key ×
+  Prod/Test) in Admin Settings → re-encrypted under `<new>`, verify under `<new>` alone, then `DELETE` the
+  rows, then **delete the local files that carry old key + ciphertext** (review r2): the 3 gitignored
+  `db/TenantCRM*.sql` exports (UTF-16 — they *do* hold the `AppSettings`/`EmailConfig`/`AIConfig` INSERTs; a
+  byte-`grep` missed them) + `C:\…\Database\TenantCRM_Azure.bacpac` + `*_Backup\`; recommend also rotating the
+  underlying SMTP/Anthropic creds. **Git history verified clean** (those exports were never `git add`ed;
+  nothing but the SQL query literal in history) → no `git filter-repo`. No bulk re-encryption in code — Mark
+  re-saves via the UI. Files: `state.py` + `.env.example` + `DeveloperSetup.md` §5 + `Deployment.md` +
+  `Database.md` (§Secrets lines 36–41, wrong after the change — review pt 1). Optional `db/data_updates/`
+  delete script.
 - **Next:** Cycle 2.2 / Gate 2 — point the local app at Azure SQL (process env vars in one shell, ports
-  3002/8002), walk the workflows, and run H60 checklist D (record resume timing). Implement H60 (A/B/C),
-  Cycle 0.4 anytime — no Azure dependency, can run in parallel.
+  3002/8002), walk the workflows, and run H60 checklist D (record resume timing). Implement H60 (A/B/C). H63 code is complete; Mark's rotation runbook remains before **Stage 0** can close.
   (H60 A/B/C acceptance still to run; the review-fix commit `cde6374` doesn't substitute for it.)
 
 ---
@@ -205,15 +223,26 @@ leaves local behaviour unchanged when no cloud env vars are set.
 - Invalid config **fails fast** with a named `ConfigError` at import — no silent degrade to Windows auth.
 - **Outstanding:** the `sql`-auth path is unverified against a live SQL Server — that is Cycle 2.2.
 
-### Cycle 0.4 — Fernet key out of the database *(handoff)*
-- `settings.py` (~lines 35–57) stores the Fernet key (`LocalEncryptionKey`) in the same `AppSettings` table as
-  the SMTP / AI-key ciphertext it protects — which defeats encrypting at rest.
-- Move the key to an env var / mounted secret (later: Container Apps secret or Key Vault). Preserve the current
-  key as the first value so existing encrypted rows still decrypt; document rotation.
-- **Done when:** secrets still decrypt, key is no longer in any DB row.
-- Risk: medium — losing the key makes encrypted config unrecoverable. Extract the current key first.
+### Cycle 0.4 — Fernet key out of the database — **Handoff 63 code complete 2026-09-08; rotation runbook pending**
+- The live key loader is `state.get_fernet(db)` (the roadmap's old `settings.py` pointer is stale — that
+  module is dead). It formerly read `dbo.AppSettings` `'LocalEncryptionKey'` per-DB and auto-generates one if missing
+  — the key sits in the same DB as the `EmailConfig.PasswordEncrypted` / `AIConfig.APIKeyEncrypted` ciphertext
+  it protects.
+- H63: `get_fernet` reads `LUCIDPM_FERNET_KEY` (comma-separated → `MultiFernet`; first encrypts, all decrypt).
+  Two keys cover the `TenantCRM` / `TenantCRM_Test` pair (independent keys) and rotation. Fail-fast
+  `ConfigError` when unset; lazy, so the app still boots. No DB read, no auto-generate. Mirrors the existing
+  `tally_import.py` `TENANTCRM_FERNET_KEY` env pattern (separate key, untouched).
+- Migration is a **rotation** (Mark, per DB): extract old keys → generate NEW → `.env`
+  `LUCIDPM_FERNET_KEY=<NEW>,<OLD…>` → re-save the 4 config secrets in Admin Settings on both DBs → verify
+  under `<NEW>` alone → `DELETE` the `'LocalEncryptionKey'` rows → delete the 3 gitignored `db/TenantCRM*.sql`
+  exports + `C:\…\Database\*.bacpac` / `*_Backup\` (all carry old key + ciphertext) → re-verify. Git history
+  clean (never `git add`ed) — no `filter-repo`. Recommend rotating the underlying SMTP/Anthropic creds too.
+- **Done when:** secrets decrypt from `LUCIDPM_FERNET_KEY=<NEW>` alone, `'LocalEncryptionKey'` row gone from
+  both DBs.
+- Risk: medium — losing the key makes encrypted config unrecoverable. Runbook keeps old keys live until the
+  re-encrypt is verified.
 
-**Gate 0:** all four committed, `git` clean, local app fully working. Zero Azure spend so far.
+**Gate 0:** all four code items committed, H63's rotation complete, `git` clean, local app fully working. Zero Azure spend so far.
 
 ---
 

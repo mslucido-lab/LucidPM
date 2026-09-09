@@ -11,7 +11,7 @@ from pathlib import Path
 
 import reflex as rx
 import pyodbc
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, MultiFernet
 
 
 def _load_local_env() -> None:
@@ -285,34 +285,36 @@ def fmt_currency(v) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Encryption utilities: Fernet-based, key persisted in AppSettings
+# Encryption utilities: Fernet-based, key supplied through the environment
 # ---------------------------------------------------------------------------
 
-def get_fernet(db: str) -> "Fernet":
-    """Load or generate the Fernet encryption key from AppSettings."""
-    rows = run_query(
-        "SELECT SettingValue FROM dbo.AppSettings WHERE SettingKey = 'LocalEncryptionKey'",
-        db=db,
-    )
-    if rows and rows[0].get("SettingValue"):
-        key = str(rows[0]["SettingValue"])
-    else:
-        key = Fernet.generate_key().decode("utf-8")
-        run_exec(
-            """
-            MERGE dbo.AppSettings AS target
-            USING (SELECT ? AS SettingKey, ? AS SettingValue) AS src
-            ON target.SettingKey = src.SettingKey
-            WHEN MATCHED THEN
-                UPDATE SET SettingValue = src.SettingValue, UpdatedOn = SYSDATETIME()
-            WHEN NOT MATCHED THEN
-                INSERT (SettingKey, SettingValue, UpdatedOn)
-                VALUES (src.SettingKey, src.SettingValue, SYSDATETIME());
-            """,
-            ("LocalEncryptionKey", key),
-            db=db,
+def _fernet() -> Fernet | MultiFernet:
+    """Build the config-secret cipher from LUCIDPM_FERNET_KEY.
+
+    The value is a comma-separated list of url-safe-base64 Fernet keys: the
+    first encrypts, all of them can decrypt. This supports rotation while
+    preserving access to secrets written under prior keys.
+    """
+    raw = os.getenv("LUCIDPM_FERNET_KEY", "")
+    keys = [key.strip() for key in raw.split(",") if key.strip()]
+    if not keys:
+        raise ConfigError(
+            "LUCIDPM_FERNET_KEY is not set (or holds no key value) — it holds "
+            "the Fernet key(s) that encrypt the saved SMTP password and "
+            "Anthropic API key. See .env.example."
         )
-    return Fernet(key.encode("utf-8"))
+    try:
+        fernets = [Fernet(key.encode("utf-8")) for key in keys]
+    except ValueError as exc:
+        raise ConfigError(
+            f"LUCIDPM_FERNET_KEY holds an invalid Fernet key: {exc}"
+        ) from None
+    return MultiFernet(fernets) if len(fernets) > 1 else fernets[0]
+
+
+def get_fernet(db: str) -> Fernet | MultiFernet:
+    """Return the config-secret cipher; `db` remains for call-site stability."""
+    return _fernet()
 
 
 def encrypt_value(value: str, db: str) -> str:
