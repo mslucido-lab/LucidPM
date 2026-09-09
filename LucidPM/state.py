@@ -4,6 +4,8 @@ Import this from any page or component.
 """
 
 import os
+import sys
+import time
 import datetime
 from pathlib import Path
 
@@ -75,12 +77,12 @@ class ConfigError(RuntimeError):
     """Raised at import when the DB env vars are set to something unusable."""
 
 
-def _validate_sql_config() -> int:
+def _validate_sql_config() -> tuple[int, int, int]:
     """Fail fast on a broken connection config — never silently degrade.
 
-    Returns the parsed login timeout. All checks are no-ops when the env is
-    unset (auth defaults to a valid 'windows', timeout to '30'), so a plain
-    local `reflex run` never reaches a raise.
+    Returns the parsed login timeout, retry count, and retry backoff. All checks
+    are no-ops when the env is unset (auth defaults to a valid 'windows',
+    timeout to '30'), so a plain local `reflex run` never reaches a raise.
     """
     if _SQL_AUTH not in ("windows", "sql"):
         raise ConfigError(
@@ -108,10 +110,28 @@ def _validate_sql_config() -> int:
         ) from None
     if timeout < 0:
         raise ConfigError("LUCIDPM_SQL_LOGIN_TIMEOUT must not be negative.")
-    return timeout
+    retries = _non_negative_int_env("LUCIDPM_SQL_CONNECT_RETRIES", "2")
+    backoff = _non_negative_int_env("LUCIDPM_SQL_RETRY_BACKOFF", "3")
+    return timeout, retries, backoff
 
 
-_SQL_LOGIN_TIMEOUT = _validate_sql_config()
+def _non_negative_int_env(name: str, default: str) -> int:
+    raw = os.getenv(name, default).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ConfigError(f"{name}={raw!r} is not an integer.") from None
+    if value < 0:
+        raise ConfigError(f"{name} must not be negative.")
+    return value
+
+
+# LUCIDPM_SQL_CONNECT_RETRIES — extra connect attempts after the first when the
+# failure looks like an Azure serverless resume (default 2 -> 3 total; 0
+# disables retry entirely and restores the pre-H60 single-attempt behaviour).
+# LUCIDPM_SQL_RETRY_BACKOFF — base seconds between attempts; attempt k waits
+# backoff * k (default 3 -> 3 s, then 6 s).
+_SQL_LOGIN_TIMEOUT, _SQL_CONNECT_RETRIES, _SQL_RETRY_BACKOFF = _validate_sql_config()
 
 BRAND_PRIMARY = "#4A63A8"
 BRAND_DARK = "#2F4C97"
@@ -131,6 +151,55 @@ def _odbc_brace(value: str) -> str:
     key=value ODBC segment. Braces are the ODBC-defined escape for this.
     """
     return "{" + value.replace("}", "}}") + "}"
+
+
+# The only connect failures worth retrying: an Azure serverless DB resuming
+# from auto-pause, or Azure throttling/resource limits. Matched exactly — a
+# bare 08001 (unreachable host / DNS / firewall), 28000 (auth), and 4060
+# (no such database / no grant) are permanent and fail on attempt 1.
+_TRANSIENT_SQLSTATES = frozenset({"HYT00", "HYT01", "08S01"})
+_TRANSIENT_NATIVE_CODES = (
+    "40613",   # database is not currently available (resuming)
+    "40143",   # connection terminated (transient)
+    "40197", "40501", "40540",          # service busy / processing request
+    "49918", "49919", "49920",          # too many operations
+    "10928", "10929",                   # resource governance limits
+    "4221",                              # read-secondary replica warm-up
+)
+
+
+def _is_transient_connect_error(exc: pyodbc.Error) -> bool:
+    sqlstate = (exc.args[0] if exc.args else "") or ""
+    if sqlstate in _TRANSIENT_SQLSTATES:
+        return True
+    text = str(exc)
+    return any(f"({code})" in text for code in _TRANSIENT_NATIVE_CODES)
+
+
+def _connect_with_resume_retry(conn_str: str, target_db: str) -> pyodbc.Connection:
+    """Connect to SQL Server, retrying only transient/resume-shaped failures."""
+    attempts = _SQL_CONNECT_RETRIES + 1
+    first_transient_exc = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return pyodbc.connect(conn_str, timeout=_SQL_LOGIN_TIMEOUT)
+        except pyodbc.Error as exc:
+            if not _is_transient_connect_error(exc):
+                raise
+            if first_transient_exc is None:
+                first_transient_exc = exc
+            if attempt >= attempts:
+                raise first_transient_exc
+            wait = _SQL_RETRY_BACKOFF * attempt
+            print(
+                f"[state.get_conn] transient DB connect error for {target_db!r} "
+                f"(SQLSTATE {exc.args[0] if exc.args else '?'}); attempt "
+                f"{attempt} of {attempts} failed, retrying in {wait}s — "
+                "Azure serverless DB is probably resuming.",
+                file=sys.stderr,
+            )
+            time.sleep(wait)
+    raise AssertionError("unreachable: the retry loop must return or raise")
 
 
 def get_conn(db: str) -> pyodbc.Connection:
@@ -153,7 +222,7 @@ def get_conn(db: str) -> pyodbc.Connection:
         parts.append("Trusted_Connection=yes")
 
     conn_str = ";".join(parts) + ";"
-    return pyodbc.connect(conn_str, timeout=_SQL_LOGIN_TIMEOUT)
+    return _connect_with_resume_retry(conn_str, target_db)
 
 
 def api_base_url() -> str:
