@@ -400,7 +400,8 @@ monkeypatching `pyodbc.connect`.
         or compare `.args`), with the final attempt available as
         `raised.__context__`.
       - Raises `OperationalError("HYT00", ...)` twice then returns a sentinel
-        object → returns the sentinel (retry recovered), one log line.
+        object → returns the sentinel (retry recovered), **two** log lines (one
+        after each failed attempt), then the third call succeeds.
       - Raises `OperationalError("28000", ...)` → raises immediately, **no** log
         line, **no** `time.sleep` (patch `time.sleep` to assert it isn't
         called).
