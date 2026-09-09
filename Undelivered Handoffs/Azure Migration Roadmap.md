@@ -157,9 +157,17 @@ everything ≈ 6–12 months.
   self-contradictory "does NOT fully boot / Handoff_49_UploadHandlerCompat" header, reconcile
   `docs/DeveloperSetup.md`. Manifest + docs only — zero pin changes, zero app code, `/api/pick-files` stays
   for Cycle 0.2. Acceptance = clean-venv install + `import LucidPM` + `reflex run` compile, all local.
+- **2026-09-08 — Handoff 62 written** (`Undelivered Handoffs/LucidoPM_ChatGPT_Handoff_62_RetireNativeFilePicker.md`,
+  complete). Stage 0 / Cycle 0.2. Investigation found the `rx.upload` migration the roadmap called for
+  **already happened** (H49 + Studio): live tenant/communications/lease-template/waiting-list uploads all use
+  `rx.upload`, and `GET /api/pick-files` (PowerShell `OpenFileDialog` in `LucidPM.py`) has **zero live
+  callers** — only archived `_vN` files reference it. So H62 is a deletion + doc reconcile, not a rewrite;
+  risk low, not medium. Phase 1 deletes the endpoint (the last `subprocess`/PowerShell call in the entry
+  module) + fixes `Architecture.md` / `Deployment.md` / `DeveloperSetup.md`. Phase 2 archives `LucidPM.py`'s
+  40 `LucidPM_Reflex_*.py` siblings (incremental `_vN` rule).
 - **Next:** Cycle 2.2 / Gate 2 — point the local app at Azure SQL (process env vars in one shell, ports
   3002/8002), walk the workflows, and run H60 checklist D (record resume timing). Implement H60 (A/B/C),
-  the remaining Stage 0 prep (0.2 / 0.4) anytime — no Azure dependency, can run in parallel.
+  Cycle 0.4 anytime — no Azure dependency, can run in parallel.
   (H60 A/B/C acceptance still to run; the review-fix commit `cde6374` doesn't substitute for it.)
 
 ---
@@ -182,13 +190,10 @@ leaves local behaviour unchanged when no cloud env vars are set.
   84 units. Existing sitemap-plugin and state-auto-setter warnings remain.
 - Risk: low. Manifest + docs only; no pin changes, no app code.
 
-### Cycle 0.2 — Browser-native file input *(handoff)*
-- Replace `/api/pick-files` in `LucidPM_Reflex.py` (~lines 39–76) — it shells out to PowerShell for a native
-  Windows `OpenFileDialog` against a hardcoded `Generated` path. No Linux equivalent, no fallback.
-- Swap for `rx.upload` / a browser file input; update every call site that consumes the picker's result.
-- **Done when:** file selection works with zero Windows/PowerShell dependency.
-- Risk: medium — downstream code assumes a local absolute path came back.
-
+### Cycle 0.2 — Browser-native file input — **complete 2026-09-08 (Handoff 62)**
+- The `rx.upload` migration already shipped piecemeal (H49 + Studio). H62 removed the orphaned `/api/pick-files` endpoint, its final PowerShell dependency, and the stale documentation.
+- **Validated:** the deleted route returns 404; the rent-roll PDF endpoint still returns a PDF; the entry module imports and Reflex compiles all 84 units.
+- Risk: low. No live consumer existed; the 40 historical entry-module siblings are archived separately.
 ### Cycle 0.3 — Connection config: env-driven + SQL auth — ✅ DONE 2026-09-07 (Handoff 58, `b47b6f8`)
 - `state.get_conn()` now builds the connection string from env vars (`LUCIDPM_SQL_SERVER` / `_PROD_DB` /
   `_TEST_DB` / `_AUTH` / `_USER` / `_PASSWORD` / `_ENCRYPT` / `_TRUST_CERT` / `_LOGIN_TIMEOUT`), defaults =
