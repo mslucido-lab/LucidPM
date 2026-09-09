@@ -77,6 +77,19 @@ class ConfigError(RuntimeError):
     """Raised at import when the DB env vars are set to something unusable."""
 
 
+def _non_negative_int_env(name: str, default: str, maximum: int | None = None) -> int:
+    raw = os.getenv(name, default).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ConfigError(f"{name}={raw!r} is not an integer.") from None
+    if value < 0:
+        raise ConfigError(f"{name} must not be negative.")
+    if maximum is not None and value > maximum:
+        raise ConfigError(f"{name}={value} exceeds the maximum of {maximum}.")
+    return value
+
+
 def _validate_sql_config() -> tuple[int, int, int]:
     """Fail fast on a broken connection config — never silently degrade.
 
@@ -110,27 +123,18 @@ def _validate_sql_config() -> tuple[int, int, int]:
         ) from None
     if timeout < 0:
         raise ConfigError("LUCIDPM_SQL_LOGIN_TIMEOUT must not be negative.")
-    retries = _non_negative_int_env("LUCIDPM_SQL_CONNECT_RETRIES", "2")
-    backoff = _non_negative_int_env("LUCIDPM_SQL_RETRY_BACKOFF", "3")
+    retries = _non_negative_int_env("LUCIDPM_SQL_CONNECT_RETRIES", "2", maximum=10)
+    backoff = _non_negative_int_env("LUCIDPM_SQL_RETRY_BACKOFF", "3", maximum=30)
     return timeout, retries, backoff
-
-
-def _non_negative_int_env(name: str, default: str) -> int:
-    raw = os.getenv(name, default).strip()
-    try:
-        value = int(raw)
-    except ValueError:
-        raise ConfigError(f"{name}={raw!r} is not an integer.") from None
-    if value < 0:
-        raise ConfigError(f"{name} must not be negative.")
-    return value
 
 
 # LUCIDPM_SQL_CONNECT_RETRIES — extra connect attempts after the first when the
 # failure looks like an Azure serverless resume (default 2 -> 3 total; 0
-# disables retry entirely and restores the pre-H60 single-attempt behaviour).
+# disables retry entirely and restores the pre-H60 single-attempt behaviour;
+# capped at 10 so a config typo fails fast at import instead of hanging every
+# connect for minutes).
 # LUCIDPM_SQL_RETRY_BACKOFF — base seconds between attempts; attempt k waits
-# backoff * k (default 3 -> 3 s, then 6 s).
+# backoff * k (default 3 -> 3 s, then 6 s; capped at 30).
 _SQL_LOGIN_TIMEOUT, _SQL_CONNECT_RETRIES, _SQL_RETRY_BACKOFF = _validate_sql_config()
 
 BRAND_PRIMARY = "#4A63A8"

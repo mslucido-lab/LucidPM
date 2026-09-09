@@ -1,6 +1,7 @@
 # LucidoPM — ChatGPT Handoff 60
 *Connection retry-on-resume for Azure SQL serverless auto-pause*
 *Prepared: 2026-09-08 · revised 2026-09-08 (Codex pre-impl review: narrow to an explicit transient set — no blanket `08*`; re-raise the FIRST transient error; checklist expects 2 retry log lines not 3)*
+*Implemented + committed `d8f6754` 2026-09-08. Claude post-impl review 2026-09-08 → upper-bound the two config vars (`retries` ≤ 10, `backoff` ≤ 30) and move `_non_negative_int_env` above its caller; see "Post-Implementation Review Fixes" below.*
 *Azure Migration — the expected follow-up after Handoff 58 / Cycle 2.2*
 
 ---
@@ -182,12 +183,16 @@ _SQL_LOGIN_TIMEOUT = _validate_sql_config()
     if timeout < 0:
         raise ConfigError("LUCIDPM_SQL_LOGIN_TIMEOUT must not be negative.")
 
-    retries = _non_negative_int_env("LUCIDPM_SQL_CONNECT_RETRIES", "2")
-    backoff = _non_negative_int_env("LUCIDPM_SQL_RETRY_BACKOFF", "3")
+    retries = _non_negative_int_env("LUCIDPM_SQL_CONNECT_RETRIES", "2", maximum=10)
+    backoff = _non_negative_int_env("LUCIDPM_SQL_RETRY_BACKOFF", "3", maximum=30)
     return timeout, retries, backoff
+```
 
+…with `_non_negative_int_env` defined **above** `_validate_sql_config` (it is
+called from inside it):
 
-def _non_negative_int_env(name: str, default: str) -> int:
+```python
+def _non_negative_int_env(name: str, default: str, maximum: int | None = None) -> int:
     raw = os.getenv(name, default).strip()
     try:
         value = int(raw)
@@ -195,24 +200,30 @@ def _non_negative_int_env(name: str, default: str) -> int:
         raise ConfigError(f"{name}={raw!r} is not an integer.") from None
     if value < 0:
         raise ConfigError(f"{name} must not be negative.")
+    if maximum is not None and value > maximum:
+        raise ConfigError(f"{name}={value} exceeds the maximum of {maximum}.")
     return value
+```
 
-
+```python
 # LUCIDPM_SQL_CONNECT_RETRIES  — extra connect attempts after the first when the
 #   failure looks like an Azure serverless resume (default 2 -> 3 total; 0
-#   disables retry entirely and restores the pre-H60 single-attempt behaviour).
+#   disables retry entirely and restores the pre-H60 single-attempt behaviour;
+#   capped at 10 so a config typo fails fast at import instead of hanging every
+#   connect for minutes).
 # LUCIDPM_SQL_RETRY_BACKOFF     — base seconds between attempts; attempt k waits
-#   backoff * k (default 3 -> 3 s, then 6 s). The login timeout already provides
-#   the long blocking wait, so this only needs to be short.
+#   backoff * k (default 3 -> 3 s, then 6 s; capped at 30). The login timeout
+#   already provides the long blocking wait, so this only needs to be short.
 _SQL_LOGIN_TIMEOUT, _SQL_CONNECT_RETRIES, _SQL_RETRY_BACKOFF = _validate_sql_config()
 ```
 
 Notes:
 - `_validate_sql_config` now returns a 3-tuple. Its existing four checks are
   unchanged; only the two lines before `return` and the return value are new.
-- `_non_negative_int_env` mirrors the existing timeout check exactly (same
-  `ConfigError`, same `from None`), so a bad value still stops startup with a
-  named error — no silent default.
+- `_non_negative_int_env` mirrors the existing timeout check (same
+  `ConfigError`, same `from None`), plus an optional `maximum` for the two
+  retry vars, so a bad *or* absurd value still stops startup with a named
+  error — no silent default, no multi-minute hang on every connect.
 - Defaults (`retries=2`, `backoff=3`) are inert locally: SQL Express connects
   first try, so the loop exits before any retry.
 
@@ -376,7 +387,8 @@ after `#LUCIDPM_SQL_LOGIN_TIMEOUT=60`, add:
 - [ ] Time a page load — no measurable change vs. before (the loop body runs
       once, no `sleep`).
 - [ ] `LUCIDPM_SQL_CONNECT_RETRIES=abc` → startup stops with a named
-      `ConfigError`. `=-1` → same. Then unset.
+      `ConfigError`. `=-1` → same. `=11` → `ConfigError` ("exceeds the maximum
+      of 10"). `LUCIDPM_SQL_RETRY_BACKOFF=31` → same ("maximum of 30"). Then unset.
 
 ### B — predicate + loop, isolated subprocess checks (no Azure, no DB needed)
 
@@ -407,7 +419,8 @@ monkeypatching `pyodbc.connect`.
         called).
       - `retries=0` → `pyodbc.connect` called once, immediate raise, no log line.
 - [ ] `LUCIDPM_SQL_CONNECT_RETRIES=abc` → startup stops with a named
-      `ConfigError`. `=-1` → same. `LUCIDPM_SQL_RETRY_BACKOFF=x` → same.
+      `ConfigError`. `=-1` → same. `=11` → `ConfigError` (over the cap).
+      `LUCIDPM_SQL_RETRY_BACKOFF=x` → same. `=31` → over the cap.
 
 ### C — non-transient path fails fast against a real server (no Azure needed)
 
@@ -428,8 +441,20 @@ monkeypatching `pyodbc.connect`.
       → one or more `[state.get_conn]` retry lines, then the page loads
       successfully **without a manual refresh**.
 - [ ] **Record** in the Cycle 2.2 / Gate 2 notes: total wall-clock to first
-      usable page, how many attempts it took, which SQLSTATE(s) appeared. Feed
-      that back into the roadmap and, if needed, tune the two defaults.
+      usable page, how many attempts it took, which SQLSTATE(s) appeared, **and
+      the exact `str(exc)` / `exc.args` of the first failure**. Feed that back
+      into the roadmap and tune the two defaults.
+- [ ] **Confirm the defaults actually bridge the resume.** If the failure is a
+      fast-returning `40613` (not a login timeout), the shipped defaults only
+      wait `3 + 6 = 9 s` between three quick attempts — likely short of a
+      20–60 s resume. If so, bump `LUCIDPM_SQL_CONNECT_RETRIES` (→ 3–4) and/or
+      `LUCIDPM_SQL_RETRY_BACKOFF` (→ 5) in `_validate_sql_config`'s defaults and
+      `.env.example`, using the measured number.
+- [ ] **Confirm the native-code match fires.** Check the captured `str(exc)`
+      contains the `(NNNNN)` parenthetical form the predicate matches on
+      (`_is_transient_connect_error`). If a throttle code (`40197` etc.) is
+      formatted without it on this ODBC build, widen the match (e.g. also accept
+      `[NNNNN]`).
 
 ### Regression
 
@@ -453,6 +478,39 @@ Per `CLAUDE.md`: edit the live file in place.
 
 `state.py`'s `_vN` siblings were already archived under Handoff 58 (`d18a256`),
 so there is no sibling cleanup this time.
+
+---
+
+## Post-Implementation Review Fixes (2026-09-08)
+
+Claude reviewed the shipped code (`d8f6754`). Two fixes applied on top; the
+retry mechanism itself was correct.
+
+1. **Upper-bound the two config vars.** `_non_negative_int_env` gained an
+   optional `maximum`; `LUCIDPM_SQL_CONNECT_RETRIES` is capped at **10**,
+   `LUCIDPM_SQL_RETRY_BACKOFF` at **30**. Without a cap, a fat-fingered `.env`
+   (`…RETRIES=100`, `…BACKOFF=300`) passed validation and turned every transient
+   connect failure into a multi-minute *blocking* `time.sleep` inside a Reflex
+   event worker — freezing that worker for all concurrent sessions. The cap
+   converts an absurd value into a fail-fast `ConfigError` at import, matching
+   `_validate_sql_config`'s "never silently degrade" contract.
+
+2. **Moved `_non_negative_int_env` above `_validate_sql_config`.** It is called
+   from inside the latter; defining it after read backwards (worked only because
+   the module-level call happens further down).
+
+Deferred to Cycle 2.2 (need a real resume to decide) — see Checklist D:
+- Whether the shipped defaults (`retries=2`, `backoff=3` → 9 s of backoff) are
+  long enough when the failure is a fast `40613` rather than a login timeout.
+- Whether this ODBC build formats throttle native codes with the `(NNNNN)`
+  substring `_is_transient_connect_error` matches on.
+- `08S01` is treated as always-transient; a permanent TLS/cert-trust misconfig
+  that surfaces as `08S01` would incur pointless retries. Left as-is (Driver 18
+  usually reports cert-trust as `08001`, which fails fast) — revisit only if
+  observed.
+
+`.env.example` retry-var comments updated with the caps. No change to the retry
+loop, the predicate, or `get_conn`.
 
 ---
 
