@@ -1,0 +1,11 @@
+# Dev / validation-only dependencies. NOT installed in production or the
+# Cycle 3.1 container image. The runtime set is requirements.txt.
+#
+# Regenerate the pins from a clean .venv that has both files installed:
+#   pip install -r requirements.txt -r requirements-dev.txt
+#   pip freeze  # then copy the playwright / pyee lines here
+
+-r requirements.txt
+
+playwright==1.62.0
+pyee==13.0.1

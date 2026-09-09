@@ -20,12 +20,23 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
+Contributors who run the validation harnesses (headless-browser checks) also
+need `pip install -r requirements-dev.txt` followed by
+`python -m playwright install chromium`.
+
 ## 3. Verify the app imports and boots
 
 ```
-python -c "import LucidPM"
+python -c "import LucidPM"            # package layout only
+python -c "import LucidPM.LucidPM"    # real app-import: every page module
 reflex run
 ```
+
+`import LucidPM` touches only the empty package initializer.
+`import LucidPM.LucidPM` imports the entry module and, through it, every
+registered page; exit code 0 is the pass criterion. Reflex prints an existing
+sitemap-plugin warning on this import; that is not a failure. Both are fast
+pre-checks before the slower `reflex run` frontend compile.
 
 At this point, expect the app to boot and the frontend to compile. Pages that hit the database will fail until the local `TenantCRM_Test` / `TenantCRM` databases exist and are reachable — that's a separate step, not a sign anything above is broken. See `docs/Database.md`.
 
@@ -34,6 +45,16 @@ At this point, expect the app to boot and the frontend to compile. Pages that hi
 ### Why `requirements.txt` pins exact versions, not ranges
 
 `reflex`, `pydantic`, and `sqlmodel` are pinned to specific versions that are known to work together, not just "latest." The app code uses `rx.Base`, which Reflex removed in 0.9.0, and the pydantic/sqlmodel versions have their own cross-compatibility constraint on top of that. See the comment header in `requirements.txt` for the full explanation — do not casually bump these without re-running the boot check above.
+
+### `pyproject.toml` vs `requirements.txt`
+
+`requirements.txt` is the authoritative, fully-pinned lockfile and the install
+target — it maps 1:1 to what ships in the container image. `pyproject.toml`
+lists only the eight direct dependencies (same pins), as a readable manifest
+for tooling and for anyone deciding whether a bump is safe.
+`requirements-dev.txt` adds validation-only packages (`playwright`, `pyee`).
+When you change a pin, change it in both `requirements.txt` and
+`pyproject.toml`, and re-run the boot check.
 
 ## 4. Document storage
 

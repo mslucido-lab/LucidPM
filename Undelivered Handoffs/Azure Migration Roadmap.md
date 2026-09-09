@@ -139,9 +139,28 @@ everything ≈ 6–12 months.
   `08*`/`HYT*` + native `40613` etc., fails fast on auth (`28000`) / bad-db (`4060`). Predicate + timeout
   behaviour verified against real `pyodbc 5.3.0` errors. Byte-identical when the DB answers first try.
   A/B/C acceptance needs no Azure; D is the Cycle 2.2 resume measurement.
+- **2026-09-08 — Handoff 60 post-impl review + fixes, committed `cde6374`.** Claude reviewed `d8f6754`: retry
+  mechanism sound. Applied — upper-bound `LUCIDPM_SQL_CONNECT_RETRIES` (≤10) / `_RETRY_BACKOFF` (≤30) via a
+  new `maximum=` arg on `_non_negative_int_env` (a config typo was an unbounded blocking `time.sleep` in a
+  Reflex worker); moved that helper above its caller. Deferred to Cycle 2.2 (need a real resume): whether the
+  9 s default backoff bridges a fast-`40613` resume, and whether this ODBC build formats throttle native codes
+  with the `(NNNNN)` substring the predicate matches. `state.py` + `.env.example` + H60 doc ("Post-Implementation
+  Review Fixes" section + checklist A/B/D).
+- **2026-09-08 — Handoff 61 implemented.** Review folded in 4 points: `.python-version` = exact `3.12.10`; pyproject `dev` extra mirrors
+  `requirements-dev.txt` (pyee included); app-import check is `import LucidPM.LucidPM` (the empty package init
+  doesn't exercise the pages); checklist D scoped to `requirements.txt` + `docs/` so it doesn't match the
+  handoff's own quoted-stale-text. Stage 0 / Cycle 0.1 — closes the gaps left after the 2026-08-16 stand-up: new `pyproject.toml`
+  (direct-dependency manifest — 8 runtime deps reconstructed from live imports: reflex, pyodbc, fastapi,
+  pypdf, reportlab, pandas, cryptography, anthropic — pins copied verbatim from `requirements.txt`, no
+  `[build-system]`), new `requirements-dev.txt` (playwright/pyee, the H58/H59 validation-harness deps that
+  are in `.venv` but not tracked), new `.python-version` (`3.12.10`), fix `requirements.txt`'s stale
+  self-contradictory "does NOT fully boot / Handoff_49_UploadHandlerCompat" header, reconcile
+  `docs/DeveloperSetup.md`. Manifest + docs only — zero pin changes, zero app code, `/api/pick-files` stays
+  for Cycle 0.2. Acceptance = clean-venv install + `import LucidPM` + `reflex run` compile, all local.
 - **Next:** Cycle 2.2 / Gate 2 — point the local app at Azure SQL (process env vars in one shell, ports
-  3002/8002), walk the workflows, and run H60 checklist D (record resume timing). Implement H60 (A/B/C)
-  and the remaining Stage 0 prep (0.1 / 0.2 / 0.4) anytime — no Azure dependency, can run in parallel.
+  3002/8002), walk the workflows, and run H60 checklist D (record resume timing). Implement H60 (A/B/C),
+  the remaining Stage 0 prep (0.2 / 0.4) anytime — no Azure dependency, can run in parallel.
+  (H60 A/B/C acceptance still to run; the review-fix commit `cde6374` doesn't substitute for it.)
 
 ---
 
@@ -150,12 +169,18 @@ everything ≈ 6–12 months.
 These fix the blockers the architect addendum found in the real repo. None need Azure to exist, and each
 leaves local behaviour unchanged when no cloud env vars are set.
 
-### Cycle 0.1 — Project scaffolding *(Claude-direct or small handoff)*
-- Add `pyproject.toml` / `requirements.txt` with pinned versions, reconstructed from source imports
-  (`reflex`, `pyodbc`, `fastapi`, `reportlab`, `pypdf`, `cryptography`, + whatever grep turns up).
-- Add `rxconfig.py` if the tracked repo genuinely lacks one; document setup in `docs/Developer Setup`.
+### Cycle 0.1 — Project scaffolding — **complete 2026-09-08 (Handoff 61)**
+- `requirements.txt` (full pinned freeze), `rxconfig.py`, `LucidPM/__init__.py`, `docs/DeveloperSetup.md`
+  all already exist from the 2026-08-16 stand-up (Handoff 49). H61 closes what's left:
+  new `pyproject.toml` (the 8 direct deps — `reflex`/`pyodbc`/`fastapi`/`pypdf`/`reportlab`/`pandas`/
+  `cryptography`/`anthropic` — pins copied from `requirements.txt`, no `[build-system]`), new
+  `requirements-dev.txt` (`playwright`/`pyee`), new `.python-version` (`3.12.10`), fix the stale
+  `requirements.txt` header, reconcile `docs/DeveloperSetup.md`.
 - **Done when:** a fresh clone → install → `reflex run` works with no tribal knowledge.
-- Risk: low. May take iteration to pin exact working versions.
+- **Validated:** clean Python 3.12.10 virtual environment installed the runtime
+  and dev lockfiles; both package and app imports exited 0; Reflex compiled all
+  84 units. Existing sitemap-plugin and state-auto-setter warnings remain.
+- Risk: low. Manifest + docs only; no pin changes, no app code.
 
 ### Cycle 0.2 — Browser-native file input *(handoff)*
 - Replace `/api/pick-files` in `LucidPM_Reflex.py` (~lines 39–76) — it shells out to PowerShell for a native

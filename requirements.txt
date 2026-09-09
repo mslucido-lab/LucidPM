@@ -12,10 +12,15 @@
 #   sqlmodel>=0.0.39 *requires* pydantic>=2.11. sqlmodel 0.0.24 is the version
 #   contemporaneous with reflex 0.8.9's own release and doesn't have that floor.
 #
-# Even with these pins, `reflex run` does NOT fully boot yet -- see
-# Undelivered Handoffs/LucidoPM_ChatGPT_Handoff_49_UploadHandlerCompat.md for
-# a separate, unrelated app-code issue (not a dependency problem) blocking the
-# tenants and communications pages specifically.
+# `reflex run` boots cleanly from these pins: verified on a clean machine
+# 2026-08-16 (Handoff 49 "StandUpOnNewLaptop") and continuously since — every
+# Handoff 50-60 change was verified in the running app.
+#
+# Direct dependencies are listed in pyproject.toml. Dev / validation-only
+# packages (playwright) are in requirements-dev.txt, not here — keep this file
+# to the app's runtime set so it maps 1:1 to the container image.
+
+# When you re-freeze, keep pyproject.toml's [project.dependencies] pins in sync.
 
 alembic==1.19.1
 annotated-doc==0.0.5
