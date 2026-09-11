@@ -1,4 +1,6 @@
 # LucidoPM — ChatGPT Handoff 65
+> **Status (2026-09-11): COMPLETED - Cycle 3.2 / Gate 3 passed.** Private GHCR image runs at `https://lucidpm.icyocean-a1d9520f.westus3.azurecontainerapps.io`, restricted to Mark-Office and Mark-Home and locked to `TenantCRM_Test`. The Azure CLI YAML wrapper returned a Boolean-conversion 400; an ARM `PUT` through `az rest` created the same prepared resource body, with its ingress restrictions, in the initial request. The app scaled to zero and returned a usable Test-data list in about one minute. Evidence: `docs/cycle-3.2-validation.md`. Next: Stage 4 blob storage.
+
 *Push the Cycle 3.1 image to private GHCR, deploy it to Azure Container Apps on a temporary,
 IP-restricted URL — Gate 3*
 *Prepared: 2026-09-11 · revised 2026-09-11 (Codex pre-implementation review, 3 points, all accepted):*

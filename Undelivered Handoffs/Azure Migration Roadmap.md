@@ -36,6 +36,8 @@ everything ≈ 6–12 months.
 
 ## Progress log
 
+- **2026-09-11 - Cycle 3.2 COMPLETE; Gate 3 PASSED.** Private image `ghcr.io/mslucido-lab/lucidpm:0.1.0` deployed as the IP-restricted Container App `lucidpm` in the shared `lucido-apps-env`, temporarily locked to `TenantCRM_Test`. The real HTTPS ingress, Reflex websocket events, Test banner/data, Rent Roll PDF, and cellular denial outside the Office/Home allowlist passed. The app reached zero replicas after idle; a cold request took about **one minute** to display a Test-data list, covering both container scale-up and any SQL serverless resume. The Azure CLI YAML wrapper failed with a Boolean-conversion 400, so the valid initial restricted deployment was sent successfully with an ARM `az rest` PUT. Evidence: `docs/cycle-3.2-validation.md`. **Next: Stage 4 (blob storage); POC completion is Gate 4.**
+
 - **2026-09-11 — Handoff 65 written** (`Undelivered Handoffs/LucidoPM_ChatGPT_Handoff_65_GhcrContainerAppsDeploy.md`,
   not started). Cycle 3.2 / Gate 3 — push the Cycle 3.1 image to private GHCR
   (`ghcr.io/mslucido-lab/lucidpm`, namespace confirmed live from Portfolio Manager's own registry
