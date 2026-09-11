@@ -1,0 +1,27 @@
+# Secrets / local config — never in an image layer
+.env
+.env.*
+!.env.example
+
+# Tenant PII exports and local database backups
+db/TenantCRM*.sql
+*.bacpac
+*_Backup/
+
+# Local dev artifacts — each build produces fresh copies
+.web/
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Not needed in the image
+.git/
+tests/
+Archived Versions/
+Undelivered Handoffs/
+Completed Handoffs/
+docs/
+*.md
+db/history/
+db/data_updates/

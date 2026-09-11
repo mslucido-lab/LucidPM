@@ -1,0 +1,15 @@
+:8080 {
+	# Dynamic Reflex endpoints: events, uploads, PDF/report routes, and health.
+	# Caddy handles WebSocket upgrades for /_event automatically.
+	@backend path /_event* /_upload* /api/* /ping /_health*
+	handle @backend {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# Static export with an SPA fallback for client-side routes.
+	handle {
+		root * /app/.web/build/client
+		try_files {path} /index.html
+		file_server
+	}
+}

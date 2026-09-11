@@ -1,22 +1,28 @@
 # Deployment
 
-## Current state: none
+## Current state
 
-LucidPM runs locally only, on Mark's dev machine, against a local SQL Server Express instance. There is no staging or production deployment, no CI/CD pipeline, and no Docker/infrastructure-as-code in this repo.
+LucidPM has a Docker image definition for local container validation. The image uses ODBC Driver 18 and the contained Azure SQL user, with Caddy serving the compiled frontend on port 8080 and proxying Reflex's backend, WebSocket, health, upload, and `/api/*` routes to its loopback-only port 8000. The image has not been pushed to a registry and no Azure Container App exists yet.
 
-## Forward-looking plan
+## Containerization
 
-Moving LucidPM (and its sibling app, Portfolio Manager) to Azure is planned but not started. The full plan — hosting target, Azure SQL migration, managed identity, Blob Storage for documents, Key Vault for secrets, and the architect gap analysis against the app's current local-Windows-authentication/local-disk assumptions — lives in `Undelivered Handoffs/Azure Planning`.
+Build the local image with the browser-facing API URL baked into the frontend bundle:
 
-As of the 2026-08-16 foundation session: Azure CLI is installed locally; no Azure subscription exists yet. Next step is Mark creating one in the Azure portal, then resuming at the plan's POC-A step (`az login`, create the resource group).
+```powershell
+docker build --build-arg REFLEX_API_URL=http://localhost:8080 -t lucidpm:dev .
+```
+
+Run it against Azure SQL with the ignored `.env.docker` file. That file supplies SQL authentication and the Fernet key without adding secrets to the image or command history:
+
+```powershell
+docker run --env-file .env.docker -p 8080:8080 lucidpm:dev
+```
+
+The build is local-only for Cycle 3.1. Publishing to GHCR, Azure Container Apps ingress, and Microsoft Entra authentication belong to Cycle 3.2 and later. The compiled frontend currently uses an absolute API URL, so Cycle 3.2 must either rebuild per deployment URL or validate a same-origin URL strategy.
 
 ## Known blockers for cloud hosting
 
-The current app makes several assumptions that don't hold in a typical cloud host and will need to be addressed before deployment is realistic:
-
-- Windows trusted authentication to a local named SQL Server instance (`Trusted_Connection=yes` to `localhost\SQLEXPRESS`)
-- Local disk paths for document storage (`C:\Dell Inspirion\TenantCRM\LeaseDocuments\...`) — as of Handoff 49 this no longer hard-fails when the path doesn't exist, but it's still not a real configurable storage location, which cloud hosting would need
-- ~~The Fernet key for config secrets was stored in `dbo.AppSettings` alongside the ciphertext it protects~~ — moved to the `LUCIDPM_FERNET_KEY` environment variable in Handoff 63; its rotation runbook is pending.
+- Local disk paths for document storage (`C:\Dell Inspirion\TenantCRM\LeaseDocuments\...`) are not a cloud storage strategy.
+- ~~The Fernet key for config secrets was stored in `dbo.AppSettings` alongside the ciphertext it protects~~ — moved to the `LUCIDPM_FERNET_KEY` environment variable and rotated in Handoff 63.
 
 The interactive Windows file picker was retired in Cycle 0.2 / Handoff 62.
-The remaining blockers are not addressed by this foundation session — see `Undelivered Handoffs/Azure Planning` for the plan to resolve them.

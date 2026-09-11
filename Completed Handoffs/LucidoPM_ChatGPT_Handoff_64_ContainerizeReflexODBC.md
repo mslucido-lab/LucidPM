@@ -36,6 +36,19 @@
 
 ---
 
+## Status
+
+**Implemented and verified locally 2026-09-11.** Docker built `lucidpm:dev`; the image runs as non-root
+`lucidpm`, passed Caddy and entrypoint syntax checks, and excludes `.env`, `.env.docker`, and local database
+exports. With `.env.docker`, Caddy served the exported app and `/ping` on port 8080 while port 8000 remained
+unreachable from the host. Read-only SQL checks reached both Azure databases through Linux ODBC Driver 18.
+Mark verified browser navigation and switching between Demo and Prod. Terminating Reflex stopped Caddy and
+exited the full container, confirming the two-process supervisor works.
+
+The implementation added `unixodbc-dev` to the builder stage because Reflex's frontend export imports
+`pyodbc`, and retains `curl` until after the Caddy binary download. These are required build-order details,
+not scope changes.
+
 ## What This Is
 
 Roadmap **Cycle 3.1** (`Undelivered Handoffs/Azure Migration Roadmap.md`, Stage 3). Package LucidPM into

@@ -36,6 +36,16 @@ everything ≈ 6–12 months.
 
 ## Progress log
 
+- **2026-09-11 — Cycle 3.1 COMPLETE: Handoff 64 container image built and verified locally.**
+  `lucidpm:dev` is a multi-stage image: the builder exports the Reflex frontend with
+  `REFLEX_API_URL=http://localhost:8080`; the non-root runtime image contains ODBC Driver 18, Reflex, and
+  Caddy. Caddy serves the frontend and proxies Reflex event/upload/API/health routes through port 8080 to
+  loopback-only port 8000. `.env`, `.env.docker`, and database exports are excluded. Caddy configuration,
+  entrypoint syntax, image isolation, frontend fallback, health, and read-only SQL access to both Azure DBs
+  passed. Mark verified browser navigation and switching between Demo and Prod. Killing Reflex made the full
+  container exit, proving supervision works. **Next: Cycle 3.2** — private GHCR push and temporary Container
+  Apps deployment; ingress WebSocket behavior and the absolute-URL decision remain the Gate 3 risks.
+
 - **2026-09-05** — Roadmap written.
 - **2026-09-06 — Stage 1 complete, Gate 1 PASSED.** Subscription `Lucido-Apps` (Azure Plan / pay-as-you-go
   under Microsoft Customer Agreement, ID `76290cf4-215e-4da5-b9ae-572e0fad7052`) in the personal
