@@ -241,6 +241,18 @@ everything ≈ 6–12 months.
   the table above: the baked-absolute-URL approach won't survive Cycle 3.2 unchanged (Container Apps
   URL differs from `localhost:8080`) — same-origin relative URLs are the cleaner fix but unverified,
   to be resolved before Cycle 3.2 starts, not mid-cycle.
+- **2026-09-11 — Handoff 64 revised a third time: Caddy reverse proxy replaces the static-mount
+  fallback (`1c6403c`).** Codex ran Step 0's spike and found the manual `StaticFiles` mount can't be
+  made safe — Reflex attaches its own internal ASGI routes (websocket event channel, `/_upload`,
+  `/ping`) onto the `api` object only when the server factory runs, **after** `LucidPM.py` finishes
+  importing, so any module-level mount would always register first and intercept them. No tracked
+  source file changed proving this (only gitignored `.web/` build output touched). Redesigned around
+  **Caddy** as a second process in the same container: Caddy owns the one exposed port (8080), serves
+  the static export directly, and reverse-proxies `/_event`/`/_upload`/`/api/*`/`/ping`/`/_health` to
+  the Reflex backend bound to loopback-only `127.0.0.1:8000`. Net effect: no `LucidPM.py` change needed
+  at all (a simplification over the removed fallback). New files: `Caddyfile`, `entrypoint.sh` (minimal
+  two-process supervision — either process dying tears down the other, container exits non-zero rather
+  than silently serving a half-broken app).
 - **Next:** Stage 3 — containerize and deploy. Largely de-risked by the Portfolio Manager precedent
   (shared Container Apps environment `lucido-apps-env`, GHCR pull-token pattern, ODBC 18 base image
   already proven in production). The residual HIGH risk is Reflex-specific: the frontend/backend split
