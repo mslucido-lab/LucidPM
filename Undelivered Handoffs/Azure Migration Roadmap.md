@@ -17,9 +17,9 @@ local production setup until the cloud version is proven.
 
 | Stage | Outcome | Cycles | Gate |
 |---|---|---|---|
-| 0 — Code prep | App is deploy-ready; no Windows-only assumptions; config is env-driven | 4–5 | — |
+| 0 — Code prep | App is deploy-ready; no Windows-only assumptions; config is env-driven | 4–5 | **✅ Gate 0 PASSED 2026-09-09** |
 | 1 — Azure foundation | Subscription, resource group, SQL server, free DB confirmed at ~$0 | 2 | **G1: free tier real?** |
-| 2 — App vs Azure SQL | LucidPM runs locally against Azure SQL, core workflows validated | 2–3 | **G2: SQL works?** |
+| 2 — App vs Azure SQL | LucidPM runs locally against Azure SQL, core workflows validated | 2–3 | **✅ G2 PASSED 2026-09-10** |
 | 3 — Containerize + deploy | LucidPM live on a temp `*.azurecontainerapps.io` URL, scaling to zero | 3–5 | **G3: Reflex in a container?** |
 | 4 — Blob storage | One lease PDF survives a container restart — **POC COMPLETE** | 2 | **G4: commit to production?** |
 | 5 — LucidPM production | Real data migrated, auth, custom subdomain, cutover | 6–8 | — |
@@ -45,7 +45,7 @@ everything ≈ 6–12 months.
     rejected new SQL servers with `RegionDoesNotAllowProvisioning` (new-subscription throttle); westus3
     worked and supports the free offer, so **westus3 is the project region** for Container Apps + Storage too.
   - Admin login `lucidadmin` (password in Mark's password manager).
-  - Firewall rule `AllowAzureServices` (0.0.0.0). Mark's client IP still to be added for SSMS (Cycle 2.1).
+  - Firewall rule `AllowAzureServices` (0.0.0.0). Mark's home + office IPs added (Cycle 2.1 / 2026-09-09).
   - Database `TenantCRM` — serverless GP_S_Gen5_2, 32 GB, `useFreeLimit: true`,
     `freeLimitExhaustionBehavior: AutoPause`, 60-min auto-pause. Confirmed $0.
   - Provider `Microsoft.Sql` registered.
@@ -184,9 +184,52 @@ everything ≈ 6–12 months.
   re-saves via the UI. Files: `state.py` + `.env.example` + `DeveloperSetup.md` §5 + `Deployment.md` +
   `Database.md` (§Secrets lines 36–41, wrong after the change — review pt 1). Optional `db/data_updates/`
   delete script.
-- **Next:** Cycle 2.2 / Gate 2 — point the local app at Azure SQL (process env vars in one shell, ports
-  3002/8002), walk the workflows, and run H60 checklist D (record resume timing). Implement H60 (A/B/C). H63 code is complete; Mark's rotation runbook remains before **Stage 0** can close.
-  (H60 A/B/C acceptance still to run; the review-fix commit `cde6374` doesn't substitute for it.)
+- **2026-09-09 — Handoff 63 rotation complete → Stage 0 (code prep) DONE, Gate 0 PASSED.** Mark ran the key
+  rotation: new `LUCIDPM_FERNET_KEY` generated, the 4 config secrets re-saved under it, app verified on the
+  new key alone, `LocalEncryptionKey` rows `DELETE`d from **both** `TenantCRM` and `TenantCRM_Test`. New key
+  lives only in `.env` (gitignored). **Conscious deviations (Mark's call, recorded — not open issues):** old
+  key kept as a commented line in `.env` for recovery insurance; runbook steps 8–9 (purge the local
+  `db/TenantCRM*.sql` / `.bacpac` / `*_Backup\` copies that still carry old key + old ciphertext; rotate the
+  underlying SMTP/Anthropic creds) not done — so on a stolen-laptop basis the old secrets stay recoverable.
+  The realised gain: the key is out of the database, so a DB-only compromise no longer yields it (the point
+  that matters for the cloud move). H63 doc → `Completed Handoffs/` with a Status section. All four Stage 0
+  cycles now complete (0.1 `e20d735`, 0.2 `7f5e931`/`401b8c3`, 0.3 `b47b6f8`, 0.4 `cc9af6b` + rotation).
+- **2026-09-09 — housekeeping.** `az` CLI **is now installed locally** (v2.90.0, logged in to `Lucido-Apps`) —
+  the "not installed / use Cloud Shell" notes below are stale. Mark's **office IP added** to the SQL firewall
+  (`Mark-Office` = 72.183.200.115); `Update-AzureSqlFirewall.ps1` at the repo root repoints a single
+  `Mark-Laptop` rule to the current public IP for home/office switching. Rules now: `AllowAzureServices`,
+  `ClientIPAddress_2026-9-5_19-28-48` (home), `Mark-Office`.
+  - *SAC note (2026-09-09):* Windows Smart App Control blocked Reflex's `rolldown` native `.node` module
+    (CodeIntegrity 3033/3077). Mark toggled SAC off then back on — it re-enabled cleanly (state 1, enforced);
+    the app then started (frontend likely already compiled, or ISG reputation caught up). If a clean `.web/`
+    rebuild re-triggers the block: run Reflex in a Docker dev container or WSL2 (Linux binaries dodge Windows
+    CI). Docker Desktop already installed from the PM migration.
+- **2026-09-09 — contained SQL user created, both DBs.** `db/azure_app_user.sql` (least-privilege
+  `lucidpm_app`, `db_datareader`+`db_datawriter` — verified sufficient against live code, which does
+  plain parameterized DML only, no DDL/sprocs/catalog reads) run against `TenantCRM` and
+  `TenantCRM_Test`. Login verified. Resolves the "cloud build needs a dedicated contained user, both
+  DBs" item from the Handoff 58 reconciliation. `lucidadmin` remains break-glass only.
+- **2026-09-09 — free-compute metric alerts + action group.** `LucidPM-TenantCRM-free-compute-low` /
+  `LucidPM-TenantCRM_Test-free-compute-low` (min `free_amount_remaining` < 10,000 over 6h, hourly eval)
+  on both DBs, notifying `mlucido@lucidoproperties.net` via a reusable `LucidPM-Alerts` action group.
+  Closes the standing roadmap alert item. (Gotcha hit while setting these up: Git Bash's MSYS path
+  conversion mangles `/subscriptions/...` resource-ID arguments passed to `az` — fix is
+  `MSYS_NO_PATHCONV=1`.)
+- **2026-09-10 — Cycle 2.2 / GATE 2 PASSED.** Full walkthrough against Azure SQL via the contained
+  `lucidpm_app` user — see the Cycle 2.2 section above and `docs/cycle-2.2-validation.md` for detail.
+  Headline results: no pyodbc/Azure-SQL incompatibility; all reads, writes (simple + bulk), email/AI,
+  and restart/reconnect work; cold-resume-from-auto-pause bridges cleanly once the H60 retry budget
+  is sized to the measured range (`retries=8`/`backoff=4`, now committed as the default — was `2`/`3`).
+  New non-blocking follow-up: a frontend DB-toggle-state null-read race exposed by Azure latency,
+  re-check at Stage 3. `Start-LucidPM-Azure.ps1` (repo root) is the reusable launcher for future Azure
+  test sessions.
+- **Next:** Stage 3 — containerize and deploy. Largely de-risked by the Portfolio Manager precedent
+  (shared Container Apps environment `lucido-apps-env`, GHCR pull-token pattern, ODBC 18 base image
+  already proven in production). The residual HIGH risk is Reflex-specific: the frontend/backend split
+  in one container, and the websocket event channel surviving Container Apps ingress (Gate 3). Also
+  outstanding, no urgency: H60 checklist A/B/C formal acceptance (behavior already exercised live, but
+  the isolated/synthetic checks were never separately run); the frontend null-race fix; application-report
+  PDF and lease-package generation weren't exercised in Cycle 2.2.
 
 ---
 
@@ -223,7 +266,7 @@ leaves local behaviour unchanged when no cloud env vars are set.
 - Invalid config **fails fast** with a named `ConfigError` at import — no silent degrade to Windows auth.
 - **Outstanding:** the `sql`-auth path is unverified against a live SQL Server — that is Cycle 2.2.
 
-### Cycle 0.4 — Fernet key out of the database — **Handoff 63 code complete 2026-09-08; rotation runbook pending**
+### Cycle 0.4 — Fernet key out of the database — ✅ DONE 2026-09-09 (Handoff 63, code `cc9af6b` + rotation)
 - The live key loader is `state.get_fernet(db)` (the roadmap's old `settings.py` pointer is stale — that
   module is dead). It formerly read `dbo.AppSettings` `'LocalEncryptionKey'` per-DB and auto-generates one if missing
   — the key sits in the same DB as the `EmailConfig.PasswordEncrypted` / `AIConfig.APIKeyEncrypted` ciphertext
@@ -242,7 +285,9 @@ leaves local behaviour unchanged when no cloud env vars are set.
 - Risk: medium — losing the key makes encrypted config unrecoverable. Runbook keeps old keys live until the
   re-encrypt is verified.
 
-**Gate 0:** all four code items committed, H63's rotation complete, `git` clean, local app fully working. Zero Azure spend so far.
+**Gate 0 — ✅ PASSED 2026-09-09.** All four code items committed (0.1 `e20d735`, 0.2 `7f5e931`/`401b8c3`,
+0.3 `b47b6f8`, 0.4 `cc9af6b`), H63 rotation complete (with recorded deviations — see progress log), local app
+working. Zero Azure spend so far.
 
 ---
 
@@ -250,15 +295,16 @@ leaves local behaviour unchanged when no cloud env vars are set.
 
 ### Cycle 1.1 — Subscription + CLI + resource group *(mostly Mark; POC-A)* — ✅ DONE 2026-09-06
 - Used an existing pay-as-you-go subscription (`Lucido-Apps`) in the personal tenant; no new signup needed.
-- `az` not installed locally — used **Azure Cloud Shell** (Bash, no storage). Install the CLI locally before
-  Stage 3.
+- Initially used **Azure Cloud Shell** (Bash, no storage); `az` CLI **installed locally 2026-09-09**
+  (v2.90.0, logged in to `Lucido-Apps`).
 - `Lucido-Apps-RG` created; `$1` budget alert set.
 
 ### Cycle 1.2 — SQL server + free database *(POC-B)* — **GATE 1** ✅ PASSED 2026-09-06
 - Server `lucidpm-sql-24899` in **westus3** (East US regions were throttled for the new subscription).
 - Database `TenantCRM`, serverless, `useFreeLimit: true`, `AutoPause` on exhaustion — confirmed $0.
 - **G1 — PASSED.** The free tier applies. Proceed.
-- Outstanding: add Mark's client IP to the server firewall for SSMS (Cycle 2.1).
+- Firewall: Mark's home IP added Cycle 2.1; office IP (`Mark-Office`) added 2026-09-09.
+  `Update-AzureSqlFirewall.ps1` (repo root) repoints a `Mark-Laptop` rule to the current public IP.
 
 ---
 
@@ -275,22 +321,34 @@ leaves local behaviour unchanged when no cloud env vars are set.
   indexes present. Only `sysdiagrams` left behind (correct).
 - See the progress log entry for detail. A cleaned `TenantCRM_azure.sql` is deferred to Stage 5.2.
 
-### Cycle 2.2 — Local app against Azure SQL *(POC-C, part 2)* — **GATE 2**
+### Cycle 2.2 — Local app against Azure SQL *(POC-C, part 2)* — **GATE 2 ✅ PASSED 2026-09-10**
 - Point local LucidPM at the Azure DB via the Stage 0.3 env vars (SQL auth). H58 shipped the plumbing;
   Part B of its checklist **is** this cycle.
-- **First real test of the SQL-auth connection string** (H58 review finding 3 — string construction is
-  verified, a live SQL-auth login is not). If login fails despite correct credentials, suspect the
-  `UID={...}` / `PWD={...}` brace-escaping in `state._odbc_brace` / `get_conn` — try an unbraced `UID=` and
-  a password without `}` to isolate.
-- Walk the major workflows: tenant / lease CRUD, rent schedules, property financials, analytics, lease document
-  generation, PDF generation.
-- Measure latency — a local app against a cloud DB is slower; confirm it's tolerable. Capture the
-  **cold-resume-from-auto-pause** number: this is checklist **D** of **Handoff 60** (SQL connect
-  retry-on-resume, written 2026-09-08, not started). H60's A/B/C acceptance needs no Azure and can land
-  before this cycle; running it here just records the resume timing and tunes `LUCIDPM_SQL_CONNECT_RETRIES`
-  / `_RETRY_BACKOFF`.
-- **G2 — GO/NO-GO:** any blocking pyodbc/Azure-SQL incompatibility, or unworkable latency, surfaces here before
-  the container work starts.
+- **First real test of the SQL-auth connection string — PASSED.** Connected via the contained
+  `lucidpm_app` user (created via `db/azure_app_user.sql`, `db_datareader`+`db_datawriter`, both DBs).
+  The `UID={...}`/`PWD={...}` brace-escaping (H58 review finding 3) works correctly against a live
+  server. Run via `Start-LucidPM-Azure.ps1` (repo root, untracked launcher) on ports 3002/8002.
+- **Workflows walked:** every page in the app loads with Azure data; write path exercised via a
+  bulk tally import + a Fernet-secret re-save (both through `lucidpm_app`, both persisted across a
+  server restart); email (IMAP) + Anthropic AI work end-to-end; DB toggle works both directions.
+  Application-report PDF and lease-package generation not separately exercised — low risk, deferred
+  to a future touch. Full detail: `docs/cycle-2.2-validation.md`.
+- **Latency:** warm navigation fine; DB toggle 10-12s warm, up to ~78s when both DBs are cold at
+  once — tolerable for a single-user tool, expected to shrink at Stage 3 co-location.
+- **Cold-resume-from-auto-pause (Handoff 60 checklist D) — MEASURED.** The shipped defaults
+  (`retries=2`/`backoff=3`, ~9s budget) were NOT enough — a resume attempt exhausted all 3 attempts
+  and hung. With the budget raised to `retries=8`/`backoff=4` (~144s), 3 cold resumes recovered
+  cleanly with no errors: ~20-30s (app start after an overnight pause) and ~78s (a DB toggle that
+  caught both `TenantCRM` and `TenantCRM_Test` cold simultaneously). This also resolved an H60
+  open question: the native-code substring match (not just the exact-SQLSTATE set) is what catches
+  these on this ODBC build. **`retries=8`/`backoff=4` is now the committed default** — `state.py` +
+  `.env.example`, 2026-09-10; see the H60 doc's "Cycle 2.2 measurement + default bump" section.
+- **New follow-up found, not a blocker:** a frontend `use_test_db_rx_state_` null-read race —
+  a component reads the DB-toggle state var before Reflex finishes hydrating; Azure's slower first
+  response exposes it (local SQL wins the race, so it wasn't seen before). Needs a null-guard;
+  re-check whether it still reproduces once the app is co-located at Stage 3 before treating it as
+  a must-fix.
+- **G2 — PASSED.** No pyodbc/Azure-SQL incompatibility. Proceed to Stage 3.
 - Risk: medium.
 
 ---
