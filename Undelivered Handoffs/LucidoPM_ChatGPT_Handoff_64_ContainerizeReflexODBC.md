@@ -12,6 +12,13 @@
 *serving frontend + backend + websocket + `/api/*`, proven by the browser event-channel test, not by*
 *counting processes. Plus: Docker Desktop's engine must be running (installed but stopped is not*
 *enough) before Step 2's `docker build`.*
+*Revised again 2026-09-11 (Codex follow-up, 3 points, all accepted): two leftover "single process"*
+*references (opening paragraph, Step 3) reworded to match point 4 above; `.venv\Scripts\reflex.exe`*
+*fixed to `.\.venv\Scripts\reflex.exe` in Step 0 (a bare relative path isn't directly executable in*
+*PowerShell — the same class of issue hit during Handoff 63); Validation B's env-var delivery changed*
+*from individual `-e` flags to `docker run --env-file .env.docker` (a new, gitignored file — NOT the*
+*main `.env`, which is Windows-auth-defaulted for host dev and would launch the container with an*
+*auth mode that cannot work on Linux at all) to keep secrets out of PowerShell history.*
 *Azure Migration — Stage 3, Cycle 3.1. HIGH risk — this is the cycle the roadmap flags as most likely to blow the schedule.*
 
 ---
@@ -19,7 +26,7 @@
 ## What This Is
 
 Roadmap **Cycle 3.1** (`Undelivered Handoffs/Azure Migration Roadmap.md`, Stage 3). Package LucidPM into
-one Docker image that runs both the Reflex frontend and backend as a single process, installs ODBC
+one Docker image that serves both the Reflex frontend and backend through a single exposed port, installs ODBC
 Driver 18, and connects to Azure SQL — verified with `docker build` + `docker run` on Mark's machine.
 
 **Scope constraint — this is Cycle 3.1 only.** It does **not** cover:
@@ -127,7 +134,7 @@ In the existing local `.venv` (any branch, doesn't need Azure):
 
 ```powershell
 $env:REFLEX_API_URL = "http://localhost:8080"
-.venv\Scripts\reflex.exe export --frontend-only --no-zip
+.\.venv\Scripts\reflex.exe export --frontend-only --no-zip
 ```
 
 Note exactly where the static build lands (expected: `.web/build/client/`, but confirm — Reflex's
@@ -136,7 +143,7 @@ same shell** (so `REFLEX_API_URL` is still set — it also governs where the *Py
 API is, via `state.api_base_url()`, independently of what got baked into the JS):
 
 ```powershell
-.venv\Scripts\reflex.exe run --env prod --backend-only --backend-port 8080
+.\.venv\Scripts\reflex.exe run --env prod --backend-only --backend-port 8080
 ```
 
 Open `http://localhost:8080/` in a browser, and open devtools' Network tab before clicking anything.
@@ -363,7 +370,7 @@ Current (`docs/Deployment.md:5`):
 LucidPM runs locally only, on Mark's dev machine, against a local SQL Server Express instance. There is no staging or production deployment, no CI/CD pipeline, and no Docker/infrastructure-as-code in this repo.
 ```
 Replace with a short "Containerization" section noting the Dockerfile exists, what it does (single
-image, single process, ports 8080, ODBC 18, contained-user SQL auth), and that it is verified locally
+image, single exposed port 8080, ODBC 18, contained-user SQL auth), and that it is verified locally
 only — no registry push, no Container App yet (that's Cycle 3.2, tracked in the roadmap).
 
 Also fix line 19, which is now stale in the other direction:
@@ -416,12 +423,36 @@ The rotation is done (2026-09-09) — drop "its rotation runbook is pending."
 
 ### B — run against Azure SQL (reuses Cycle 2.2's `lucidpm_app`)
 
-- [ ] `docker run -p 8080:8080` with the H58 env vars (`LUCIDPM_SQL_SERVER`, `LUCIDPM_SQL_AUTH=sql`,
-      `LUCIDPM_SQL_USER=lucidpm_app`, `LUCIDPM_SQL_PASSWORD`, `LUCIDPM_PROD_DB`, `LUCIDPM_TEST_DB`,
-      `LUCIDPM_SQL_TRUST_CERT=no`) + `LUCIDPM_FERNET_KEY` (from `.env`). **Do not** expect
-      `-e REFLEX_API_URL=...` at `docker run` time to fix a wrong frontend bundle — that value is
-      already fixed, baked in at `docker build` time via `--build-arg`. Only pass it at `run` time if
-      you deliberately want it to differ from the build-time value (it shouldn't, for this cycle).
+- [ ] Create **`.env.docker`** (repo root, gitignored — matches the existing `.env.*` wildcard in
+      `.gitignore`, and already excluded from the image by Step 1's `.dockerignore`). **Not** the main
+      `.env`: that file is defaulted for host-Windows local dev (Windows auth against
+      `localhost\SQLEXPRESS`), which cannot work at all from inside a Linux container, so
+      `--env-file .env` would launch the container with an auth mode guaranteed to fail rather than
+      just being wrong. `.env.docker` holds:
+      ```
+      LUCIDPM_SQL_SERVER=lucidpm-sql-24899.database.windows.net
+      LUCIDPM_SQL_AUTH=sql
+      LUCIDPM_SQL_USER=lucidpm_app
+      LUCIDPM_SQL_PASSWORD=<the lucidpm_app password>
+      LUCIDPM_SQL_TRUST_CERT=no
+      LUCIDPM_PROD_DB=TenantCRM
+      LUCIDPM_TEST_DB=TenantCRM_Test
+      LUCIDPM_FERNET_KEY=<copy the current value from .env>
+      LUCIDPM_ENV=cloud
+      REFLEX_API_URL=http://localhost:8080
+      ```
+      Then: `docker run --env-file .env.docker -p 8080:8080 lucidpm:dev` — keeps every secret out of
+      PowerShell history and off the command line. **Do not** additionally pass `-e REFLEX_API_URL=...`
+      on the command line expecting it to fix a wrong frontend bundle — that value is already fixed,
+      baked in at `docker build` time via `--build-arg`; the `REFLEX_API_URL` line in `.env.docker`
+      above only matters for the *Python-side* runtime read (`state.api_base_url()`) and should match
+      the build-time value, not override it.
+      Aside: `state.py`'s own dependency-free `.env` file loader looks for a literal `.env` in the
+      working directory, which won't exist inside the container (excluded by `.dockerignore`) — that's
+      fine and expected. `docker run --env-file` sets real OS environment variables before the Python
+      process starts, so `os.getenv()` sees them directly; the loader's absence-of-`.env` fallback is a
+      silent no-op. This is also a preview of how Cycle 3.2's Container Apps `secretref:` env vars will
+      reach the app — same mechanism, no code difference.
 - [ ] `http://localhost:8080/` loads the **real compiled app** in a browser — not blank, not a 404,
       not Reflex's "frontend not running" placeholder. Check devtools' Network tab: requests should
       target `localhost:8080`, not `8000` — a `8000` sighting means the build-arg didn't take.
