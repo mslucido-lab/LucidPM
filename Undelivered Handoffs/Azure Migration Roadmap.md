@@ -36,18 +36,8 @@ everything ≈ 6–12 months.
 
 ## Progress log
 
-- **2026-09-11 — Handoff 66 written** (`Undelivered Handoffs/LucidoPM_ChatGPT_Handoff_66_DocumentStorageAbstraction.md`,
-  not started). Cycle 4.1 — a small storage interface (`DocumentStorage`: `save`/`read`/`exists`) with
-  two implementations, local filesystem (today's behavior, unchanged) and Azure Blob, selected by
-  `LUCIDPM_STORAGE_BACKEND`. Deliberately narrow: only the generated-lease-package write/read pair
-  (`merge_pdf_files()` in `lease_documents_pdf.py` → `/api/lease-generated-pdf` in `LucidPM.py`) is
-  wired through it — exactly the round-trip Cycle 4.2's restart-survival proof needs. Source-PDF
-  upload/split, the `storage_root` admin screen, and the stale-`StoredFilePath` cleanup are explicitly
-  out of scope (Cycle 5.1). Prerequisites created live this session: `Microsoft.Storage` provider
-  registered (was `NotRegistered`); storage account `lucidpmdocs24899` (westus3, Standard_LRS,
-  StorageV2, no public blob access); private container `lucidpm-documents`. **Next after this:**
-  Cycle 4.2 — deploy the updated image, generate a PDF in the live Container App, scale to zero and
-  back, confirm it survived. That's **Gate 4** — the actual POC-complete decision point.
+- **2026-09-11 - Cycle 4.1 COMPLETE: Handoff 66 storage abstraction passed.** Generated lease packages now use `DocumentStorage`, selected by `LUCIDPM_STORAGE_BACKEND`: the local backend preserves the flat `Generated` folder and original `_2` collision suffix, while the private Azure Blob backend uses collision-resistant lease-specific keys. Local filesystem regression checks plus live Blob generation, listing, app download, direct Blob download, history/Review status, and regeneration passed. The implementation also fixed the history status badge, which initially still tested Blob identifiers with `os.path.isfile`. The Storage Account connection string remains local-only in ignored `.env`; **Cycle 4.2 must use a scoped SAS token or managed identity before deployment.** Evidence: `docs/cycle-4.1-validation.md`. **Next: Cycle 4.2 / Gate 4 - deploy, scale to zero, and retrieve a generated package.**
+
 - **2026-09-11 - Cycle 3.2 COMPLETE; Gate 3 PASSED.** Private image `ghcr.io/mslucido-lab/lucidpm:0.1.0` deployed as the IP-restricted Container App `lucidpm` in the shared `lucido-apps-env`, temporarily locked to `TenantCRM_Test`. The real HTTPS ingress, Reflex websocket events, Test banner/data, Rent Roll PDF, and cellular denial outside the Office/Home allowlist passed. The app reached zero replicas after idle; a cold request took about **one minute** to display a Test-data list, covering both container scale-up and any SQL serverless resume. The Azure CLI YAML wrapper failed with a Boolean-conversion 400, so the valid initial restricted deployment was sent successfully with an ARM `az rest` PUT. Evidence: `docs/cycle-3.2-validation.md`. **Next: Stage 4 (blob storage); POC completion is Gate 4.**
 
 - **2026-09-11 — Handoff 65 written** (`Undelivered Handoffs/LucidoPM_ChatGPT_Handoff_65_GhcrContainerAppsDeploy.md`,

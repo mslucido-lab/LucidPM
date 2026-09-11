@@ -70,10 +70,10 @@ from LucidPM.pages.lease_documents_pdf import (
     DEFAULT_DOCUMENT_ROOT,
     merge_pdf_files,
     normalize_storage_root,
-    page_count,
     relative_to_root,
     render_text_to_pdf,
     render_text_sections_to_pdf,
+    save_generated_package,
 )
 from LucidPM.lease_merge import (
     apply_clause_numbering,
@@ -1578,17 +1578,10 @@ class LeasePackageBuilderState(AppState):
                 self.form_error = "No valid sections to merge."
                 return
 
-            output_path = merge_pdf_files(pdf_paths_to_merge, self.package_name.strip(), root)
-            if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
-                raise RuntimeError(f"Merged PDF was not created or is empty: {output_path}")
-            try:
-                merged_page_count = page_count(output_path)
-            except Exception as page_ex:
-                raise RuntimeError(f"Merged PDF could not be opened for validation: {page_ex}")
-            if merged_page_count <= 0:
-                raise RuntimeError(f"Merged PDF has no pages: {output_path}")
-
-            filename = os.path.basename(output_path)
+            merged_bytes, merged_page_count = merge_pdf_files(pdf_paths_to_merge)
+            output_path, filename = save_generated_package(
+                merged_bytes, self.selected_lease_id, self.package_name.strip(), root
+            )
             now = datetime.datetime.now()
             notes = self.package_notes.strip()
 
@@ -1798,6 +1791,9 @@ class LeasePackageBuilderState(AppState):
             version_by_id[int(r["LeaseGeneratedDocumentID"])] = f"v{idx}"
 
         latest_id = int(rows[-1]["LeaseGeneratedDocumentID"]) if rows else 0
+        from LucidPM.document_storage import get_document_storage
+
+        storage = get_document_storage()
         display_rows = sorted(
             rows,
             key=lambda r: (r.get("GeneratedOn") or datetime.datetime.min, int(r["LeaseGeneratedDocumentID"])),
@@ -1808,7 +1804,7 @@ class LeasePackageBuilderState(AppState):
         for r in display_rows:
             generated_id = int(r["LeaseGeneratedDocumentID"])
             file_path = str(r.get("StoredFilePath") or "")
-            status = "File OK" if file_path and os.path.isfile(file_path) else "Missing file"
+            status = "File OK" if file_path and storage.exists(file_path) else "Missing file"
             revised_count = int(r.get("RevisedSectionCount") or 0)
             package_rows.append(GeneratedPackageRow(
                 generated_id=generated_id,
@@ -1860,11 +1856,14 @@ class LeasePackageBuilderState(AppState):
 
         r = rows[0]
         path = str(r.get("StoredFilePath") or "")
+        from LucidPM.document_storage import get_document_storage
+
+        storage = get_document_storage()
         self.selected_generated_id = gid
         self.selected_generated_on = fmt_dt(r.get("GeneratedOn"))
         self.selected_generated_file_name = str(r.get("GeneratedFileName") or "")
         self.selected_generated_path = path
-        self.selected_generated_status = "File OK" if path and os.path.isfile(path) else "Missing file"
+        self.selected_generated_status = "File OK" if path and storage.exists(path) else "Missing file"
         self.selected_generated_revision_status = ""
         self.selected_generated_is_stale = False
         self.selected_generated_notes = str(r.get("PackageNotes") or "")
@@ -2279,15 +2278,10 @@ class LeasePackageBuilderState(AppState):
             root = normalize_storage_root(self.output_storage_root)
             next_version_number = self._next_generated_version_number(source_lease_id)
             regen_name = self._build_versioned_package_filename(next_version_number)
-            output_path = merge_pdf_files(pdf_paths_to_merge, regen_name, root)
-
-            if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
-                raise RuntimeError(f"Regenerated PDF was not created or is empty: {output_path}")
-            merged_page_count = page_count(output_path)
-            if merged_page_count <= 0:
-                raise RuntimeError(f"Regenerated PDF has no pages: {output_path}")
-
-            filename = os.path.basename(output_path)
+            merged_bytes, merged_page_count = merge_pdf_files(pdf_paths_to_merge)
+            output_path, filename = save_generated_package(
+                merged_bytes, source_lease_id, regen_name, root
+            )
             now = datetime.datetime.now()
 
             # Create a new generated package record. Do not update the selected

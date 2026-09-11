@@ -2,7 +2,9 @@
 
 ## Current state
 
-LucidPM has a Docker image definition for local container validation. The image uses ODBC Driver 18 and the contained Azure SQL user, with Caddy serving the compiled frontend on port 8080 and proxying Reflex's backend, WebSocket, health, upload, and `/api/*` routes to its loopback-only port 8000. The image has not been pushed to a registry and no Azure Container App exists yet.
+LucidPM runs as the `lucidpm` Azure Container App in `lucido-apps-env` (West US 3), using private image `ghcr.io/mslucido-lab/lucidpm:0.1.0`. The image uses ODBC Driver 18 and Caddy serves the compiled frontend on port 8080 while proxying Reflex's backend, WebSocket, health, upload, and `/api/*` routes to loopback-only port 8000.
+
+Ingress is limited to Mark's Office and Home IP addresses; Microsoft Entra authentication is Stage 5.3 work. The temporary deployment is locked to `TenantCRM_Test` via `LUCIDPM_SINGLE_DB`, and scales to zero when idle. A cold request takes about one minute to return usable Test data. See `docs/cycle-3.2-validation.md` for Gate 3 evidence.
 
 ## Containerization
 
@@ -18,7 +20,7 @@ Run it against Azure SQL with the ignored `.env.docker` file. That file supplies
 docker run --env-file .env.docker -p 8080:8080 lucidpm:dev
 ```
 
-The build is local-only for Cycle 3.1. Publishing to GHCR, Azure Container Apps ingress, and Microsoft Entra authentication belong to Cycle 3.2 and later. The compiled frontend currently uses an absolute API URL, so Cycle 3.2 must either rebuild per deployment URL or validate a same-origin URL strategy.
+The production build uses the known Container Apps FQDN as `REFLEX_API_URL`; Cycle 3.2 validated that deployment path. Rebuild with the appropriate browser-facing URL when the Stage 5.4 custom domain is introduced.
 
 ## Known blockers for cloud hosting
 

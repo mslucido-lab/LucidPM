@@ -809,12 +809,14 @@ async def lease_generated_pdf_endpoint(request: Request):
     file_path = str(row.get("StoredFilePath") or "").strip()
     filename = str(row.get("GeneratedFileName") or os.path.basename(file_path) or "lease_package.pdf").strip()
 
-    if not file_path or not os.path.isfile(file_path):
-        msg = f"Generated PDF file not found on disk: {file_path}"
+    from LucidPM.document_storage import get_document_storage
+
+    storage = get_document_storage()
+    if not file_path or not storage.exists(file_path):
+        msg = f"Generated PDF not found in storage: {file_path}"
         return Response(content=msg.encode("utf-8"), status_code=404)
 
-    with open(file_path, "rb") as f:
-        pdf_bytes = f.read()
+    pdf_bytes = storage.read(file_path)
 
     return Response(
         content=pdf_bytes,

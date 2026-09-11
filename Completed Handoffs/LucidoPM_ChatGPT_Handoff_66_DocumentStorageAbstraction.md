@@ -1,4 +1,6 @@
 # LucidoPM — ChatGPT Handoff 66
+> **Status (2026-09-11): COMPLETED - Cycle 4.1 passed.** Generated lease packages now use the selected local or private Azure Blob backend. Local storage preserves the flat `Generated` folder and counter suffixes; Blob storage uses lease-specific collision-resistant keys. Live validation covered package generation, Blob listing, app download, direct Blob download, history status, Review, Download, and regeneration. A direct-path status-badge gap found during validation was corrected. Evidence: `docs/cycle-4.1-validation.md`. Cycle 4.2 must deploy this image using a scoped SAS token or managed identity and prove scale-to-zero survival.
+
 *Storage abstraction for generated lease package PDFs: local filesystem today, Azure Blob as a second
 implementation — proves the round-trip Cycle 4.2 needs*
 *Prepared: 2026-09-11 · revised 2026-09-11 (Codex pre-implementation review, 3 questions + 2*

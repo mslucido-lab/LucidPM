@@ -55,6 +55,7 @@ Patched 4/29/2026:
 from __future__ import annotations
 
 import datetime
+import io
 import os
 import re
 import shutil
@@ -1170,9 +1171,8 @@ def render_text_sections_to_pdf(section_texts: Sequence[str], output_path: str) 
     return _validate_pdf_output(output_path, "render_text_sections_to_pdf()")
 
 
-def merge_pdf_files(section_paths: Iterable[str], output_name: str, storage_root: str | None = None) -> str:
-    folder = generated_folder(storage_root or DEFAULT_DOCUMENT_ROOT)
-    ensure_folder(folder)
+def merge_pdf_files(section_paths: Iterable[str]) -> tuple[bytes, int]:
+    """Merge PDF sections and return validated PDF bytes and page count."""
     paths = list(section_paths or [])
     missing = [p for p in paths if not p or not os.path.isfile(p)]
     if missing:
@@ -1186,17 +1186,29 @@ def merge_pdf_files(section_paths: Iterable[str], output_name: str, storage_root
         for page in reader.pages:
             writer.add_page(page)
 
-    filename = safe_pdf_filename(output_name)
-    target = os.path.join(folder, filename)
-    counter = 2
-    stem, ext = os.path.splitext(target)
-    while os.path.exists(target):
-        target = f"{stem}_{counter}{ext}"
-        counter += 1
+    if len(writer.pages) <= 0:
+        raise RuntimeError("Merged PDF has no pages.")
 
-    with open(target, "wb") as f:
-        writer.write(f)
-    return target
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    data = buffer.getvalue()
+    if not data:
+        raise RuntimeError("Merged PDF produced no bytes.")
+    return data, len(writer.pages)
+
+
+def save_generated_package(
+    data: bytes,
+    lease_id: int,
+    output_name: str,
+    storage_root: str | None = None,
+) -> tuple[str, str]:
+    """Persist a merged package and return (stored identifier, display name)."""
+    from LucidPM.document_storage import get_document_storage
+
+    filename = safe_pdf_filename(output_name)
+    identifier = get_document_storage(storage_root).save(lease_id, filename, data)
+    return identifier, filename
 
 
 def is_safe_document_path(path: str, storage_root: str | None = None) -> bool:
