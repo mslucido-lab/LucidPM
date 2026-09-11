@@ -36,6 +36,16 @@ everything ≈ 6–12 months.
 
 ## Progress log
 
+- **2026-09-11 — Handoff 65 written** (`Undelivered Handoffs/LucidoPM_ChatGPT_Handoff_65_GhcrContainerAppsDeploy.md`,
+  not started). Cycle 3.2 / Gate 3 — push the Cycle 3.1 image to private GHCR
+  (`ghcr.io/mslucido-lab/lucidpm`, namespace confirmed live from Portfolio Manager's own registry
+  config), deploy to the shared `lucido-apps-env`, temporary `*.azurecontainerapps.io` URL,
+  IP-restricted (no Entra yet — Stage 5.3), locked to `TenantCRM_Test` only via `LUCIDPM_SINGLE_DB`.
+  Resolves H64's baked-absolute-URL open question for this cycle: the environment's domain suffix is
+  fixed and already known (`icyocean-a1d9520f.westus3.azurecontainerapps.io`, confirmed live), so the
+  app's FQDN is predictable before creation — rebuild with the real URL baked in via `--build-arg`, no
+  same-origin/relative-URL spike needed yet. Not primarily a code handoff — mostly Azure/GitHub account
+  operations, tagged per-step [Mark] / [Claude via `az`] / [Mark verifies].
 - **2026-09-11 — Cycle 3.1 COMPLETE: Handoff 64 container image built and verified locally.**
   `lucidpm:dev` is a multi-stage image: the builder exports the Reflex frontend with
   `REFLEX_API_URL=http://localhost:8080`; the non-root runtime image contains ODBC Driver 18, Reflex, and
