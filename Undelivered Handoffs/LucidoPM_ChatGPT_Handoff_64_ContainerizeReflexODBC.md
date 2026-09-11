@@ -19,6 +19,19 @@
 *from individual `-e` flags to `docker run --env-file .env.docker` (a new, gitignored file — NOT the*
 *main `.env`, which is Windows-auth-defaulted for host dev and would launch the container with an*
 *auth mode that cannot work on Linux at all) to keep secrets out of PowerShell history.*
+*Revised a third time 2026-09-11 (Codex ran Step 0's spike; result required a design change, not a*
+*wording fix): the manual `StaticFiles` mount fallback is REMOVED — Reflex attaches its own internal*
+*ASGI routes (websocket event channel, `/_upload`, `/ping`) onto the `api` object only when the server*
+*factory runs, which is after `LucidPM.py` finishes importing. There is no point in application code*
+*where a mount is guaranteed to register after Reflex's own routes, so any `LucidPM.py`-level mount*
+*would always intercept them first and break the websocket channel. (No tracked source file was*
+*changed proving this — only gitignored `.web/` build output was touched.) Fix: **Caddy**, a second*
+*process in the same container, added in front of Reflex instead of a mount inside it — Caddy owns*
+*the one exposed port (8080), serves the static export directly, and reverse-proxies*
+*`/_event`/`/_upload`/`/api/*`/`/ping`/`/_health` to the Reflex backend on internal-only*
+*`127.0.0.1:8000`. Net effect: no `LucidPM.py` change at all (a simplification), `Caddyfile` and*
+*`entrypoint.sh` added as new files, `LUCIDPM_FRONTEND_BUILD_DIR` fully removed (it was only ever for*
+*the now-deleted fallback). See Step 0 and Step 2.*
 *Azure Migration — Stage 3, Cycle 3.1. HIGH risk — this is the cycle the roadmap flags as most likely to blow the schedule.*
 
 ---
@@ -78,8 +91,10 @@ stale after this cycle lands.
 **Entry point** (`LucidPM/LucidPM.py`):
 - Line 37: `api = FastAPI()` — a real FastAPI instance.
 - Lines 927–929: `app = rx.App(..., api_transformer=api)` — Reflex attaches its own routes
-  (websocket event channel, `/ping`, uploads, etc.) onto this same `api` object rather than creating
-  its own. This is the anchor for the static-file fallback in Step 1 below, if needed.
+  (websocket event channel, `/ping`, uploads, etc.) onto this same `api` object, but only when the
+  server factory runs — **after** this module finishes importing, not at construction time. That
+  timing is exactly why a static-file mount can't safely live in this file (see Step 0) and why Step 2
+  puts Caddy in front instead.
 - Lines 932+: ~19 `app.add_page(..., route="/...")` calls. The custom `/api/*` PDF/report endpoints
   (rent roll, application report, leases-expiring) are registered on `api` elsewhere in the file —
   leave those untouched; they already work locally and were exercised again in Cycle 2.2.
@@ -116,70 +131,43 @@ npm-style packages) and `curl`/`ca-certificates`, not a `nodejs` apt package.
 
 ## The Fix
 
-### Step 0 — spike: does Reflex serve its own export? (no Docker, ~15 min)
+### Step 0 — RESOLVED: does Reflex serve its own export? (Caddy reverse proxy, not a mount)
 
 Do this **before** writing the Dockerfile. It's the one real unknown, and it's cheap to check without
 a container at all.
 
-**Set the API URL before exporting — this is baked into the compiled bundle, not read at runtime.**
-Verified directly from Reflex 0.8.9's own source: the plain `reflex export` CLI command
-(`reflex/reflex.py:export()`) calls `export_utils.export()` with no `api_url` argument, so it falls
-through to `config = get_config()` — which resolves `REFLEX_API_URL` from the environment at the
-moment `build.build()` runs (`reflex/utils/export.py`) and writes that value into the static frontend
-output. If the env var isn't set to match wherever the backend will actually listen, the exported JS
-silently calls the wrong host/port and Step 0 will look like a failure ("does Reflex serve its own
-export?") when the real bug is just a URL mismatch.
+**RESOLVED by running the spike (2026-09-11): Reflex does not serve its own export from application
+code, and the manual `StaticFiles` mount cannot be made safe.** Reflex attaches its own internal ASGI
+routes (the websocket event channel, `/_upload`, `/ping`, etc.) onto the `api` object only when the
+server factory actually runs — **after** `LucidPM.py` has finished being imported, not at
+`rx.App(..., api_transformer=api)` construction time and not after the last `app.add_page(...)` call.
+There is no point in application code, at module level, where a manual `api.mount("/", StaticFiles(...))`
+is guaranteed to run *after* Reflex's own routes are attached — it would always end up registered
+first, and a catch-all mount at `/` intercepts every request before Reflex's own router is ever
+reached, breaking the websocket channel. (No tracked source file was changed proving this — the spike
+only touched the gitignored `.web/` build output.)
 
-In the existing local `.venv` (any branch, doesn't need Azure):
+**Fix: a reverse proxy in front of Reflex, not a mount inside it.** Add **Caddy** as a second process
+in the same container, and let it own the one externally exposed port instead of Reflex:
 
-```powershell
-$env:REFLEX_API_URL = "http://localhost:8080"
-.\.venv\Scripts\reflex.exe export --frontend-only --no-zip
-```
+- Caddy listens on **`:8080`** (the one exposed port — `REFLEX_API_URL=http://localhost:8080`,
+  already decided in the previous revision, still stands and is now *more* clearly correct: it's the
+  one origin the browser ever talks to).
+- Caddy serves the static export (`.web/build/client`) directly for asset requests, falling back to
+  `index.html` for anything else so client-side routing (react-router) still works on a direct page
+  load/refresh, not just in-app navigation.
+- Caddy reverse-proxies `/_event`, `/_upload`, `/api/*` (the 9 custom PDF/report routes registered on
+  `api` in `LucidPM.py`, all under `/api/...` — confirmed: `grep -n '@api\.\(get\|post\)' LucidPM/LucidPM.py`),
+  `/ping`, and `/_health` to the Reflex backend, which runs `--backend-only` bound to **`127.0.0.1:8000`**
+  — loopback only, never published, never reachable except through Caddy. Caddy's `reverse_proxy`
+  handles the WebSocket upgrade (`Connection: Upgrade`) transparently, no special config needed.
+- This satisfies the acceptance bar from the previous revision exactly as worded — **one container,
+  one exposed port, one origin** — while making zero assumptions about Reflex's internal route-attach
+  timing. It also means **no `LucidPM.py` change at all**, which is a net simplification versus the
+  fallback this revision removes.
 
-Note exactly where the static build lands (expected: `.web/build/client/`, but confirm — Reflex's
-export layout can shift between versions and 0.8.9 hasn't been checked here before). Then, **in the
-same shell** (so `REFLEX_API_URL` is still set — it also governs where the *Python* side thinks the
-API is, via `state.api_base_url()`, independently of what got baked into the JS):
-
-```powershell
-.\.venv\Scripts\reflex.exe run --env prod --backend-only --backend-port 8080
-```
-
-Open `http://localhost:8080/` in a browser, and open devtools' Network tab before clicking anything.
-
-- **If the real compiled app loads and the Network tab shows requests going to `localhost:8080`** (not
-  a blank page, not a 404, not Reflex's dev-mode "frontend not running" message, and — importantly —
-  not requests silently failing against `8000`) — Reflex's own backend serves the exported static
-  build automatically. Proceed to Step 1 with the Dockerfile as written below; no code change needed
-  in `LucidPM.py`. If the page loads but the Network tab shows failed calls to `8000`, that's the URL
-  mismatch this revision fixed, not a native-serving failure — recheck that `REFLEX_API_URL` was set
-  before the `export` command specifically.
-- **If it 404s / serves nothing at `/`** — Reflex expects a separate static host in production mode.
-  Fall back to the manual mount, added to `LucidPM/LucidPM.py` **after all `app.add_page(...)` calls**
-  (the mount is a catch-all at `/` and must not be registered before Reflex's own routes, or it will
-  shadow them):
-
-  ```python
-  # LucidPM/LucidPM.py — add near the end of the file, after every app.add_page(...) call.
-  # Only activates when LUCIDPM_FRONTEND_BUILD_DIR is set (i.e. inside the container); local
-  # `reflex run` dev workflow is completely unaffected since that var is never set there.
-  import os
-  from fastapi.staticfiles import StaticFiles
-
-  _frontend_build_dir = os.getenv("LUCIDPM_FRONTEND_BUILD_DIR")
-  if _frontend_build_dir and os.path.isdir(_frontend_build_dir):
-      api.mount("/", StaticFiles(directory=_frontend_build_dir, html=True), name="frontend")
-  ```
-
-  If this still doesn't work (a real page route now serves the static `index.html` instead of the
-  app, or the websocket 404s), the mount is intercepting requests Reflex's own router should have
-  handled first — the fix is registration order, not a different approach: move the `api.mount(...)`
-  call later, or check whether Reflex populates `api.routes` at `rx.App()` construction time
-  (`LucidPM.py:927`) vs. later at compile/serve time, and place the mount after whichever happens last.
-
-Record which path was needed in the "Do Not Touch" note this handoff leaves behind, so Cycle 3.2
-doesn't have to rediscover it.
+This is Step 2's Dockerfile now — no separate spike command to run before it; the finding above *is*
+the resolved Step 0.
 
 ### Step 1 — `.dockerignore` (new file, repo root)
 
@@ -255,6 +243,9 @@ RUN reflex export --frontend-only --no-zip
 # ---- Stage 2: runtime image ----
 FROM python:3.12.10-slim-bookworm
 ARG REFLEX_API_URL=http://localhost:8080
+ARG CADDY_VERSION=2.8.4
+# ^ Verify this is still current at https://github.com/caddyserver/caddy/releases
+#   before implementation — not re-checked as part of this revision.
 
 # Microsoft ODBC Driver 18 — standard Debian 12 (bookworm) recipe.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -269,6 +260,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get purge -y --auto-remove curl gnupg2 \
     && rm -rf /var/lib/apt/lists/*
 
+# Caddy: static binary release, not a third-party apt repo — avoids adding a
+# second GPG key/source list alongside Microsoft's, for one small binary.
+RUN curl -fsSL -o /tmp/caddy.tar.gz \
+      "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_amd64.tar.gz" \
+    && tar -xzf /tmp/caddy.tar.gz -C /usr/local/bin caddy \
+    && rm /tmp/caddy.tar.gz \
+    && chmod +x /usr/local/bin/caddy
+
 RUN useradd --create-home --shell /usr/sbin/nologin lucidpm
 WORKDIR /app
 
@@ -281,14 +280,13 @@ COPY . .
 # compiles nothing useful. Runs as root, before the ownership change below.
 RUN python -m compileall -q .
 
-# Adjust this path once Step 0 confirms the real export location, and drop it
-# (and the LUCIDPM_FRONTEND_BUILD_DIR line below) entirely if the manual-mount
-# fallback wasn't needed.
 COPY --from=builder /app/.web/build/client ./.web/build/client
+COPY Caddyfile ./Caddyfile
+COPY entrypoint.sh ./entrypoint.sh
 
 # Fix the exact PM lesson from the knowledge-share doc: container ran non-root
 # but /app was still root-owned. chown BEFORE the USER switch, not after.
-RUN chown -R lucidpm:lucidpm /app
+RUN chown -R lucidpm:lucidpm /app && chmod +x ./entrypoint.sh
 USER lucidpm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -299,23 +297,75 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # (state.api_base_url() / rx.config.get_config().api_url) to build PDF/report
 # download links — a separate consumer from the JS bundle the builder stage
 # baked. Must match the build-time value above or the two disagree about
-# where "the API" is. Only add the next line if Step 0 needed the fallback:
-# ENV LUCIDPM_FRONTEND_BUILD_DIR=/app/.web/build/client
+# where "the API" is.
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/ping').status==200 else 1)"
+# Deliberately hits port 8080 (through Caddy), not 8000 directly — this
+# verifies the WHOLE chain (Caddy up + proxying correctly + backend
+# answering), not just one half of it.
 
-# One container, one exposed port (8080), serving frontend + backend +
-# websocket + the /api/* routes. --backend-only skips starting the separate
-# frontend dev server; the exported static build is what serves the UI. Note:
-# `reflex run` is a CLI launcher and may run more than one OS process under
-# the hood — that's fine. The acceptance bar is "one port answers for
-# everything", proven by Validation Checklist B, not process-counting.
-CMD ["reflex", "run", "--env", "prod", "--backend-only", \
-     "--backend-host", "0.0.0.0", "--backend-port", "8080"]
+# One container, one exposed port (8080/Caddy). Reflex's backend binds to
+# 127.0.0.1:8000 — loopback only, never published, reachable only through
+# Caddy. See entrypoint.sh for how the two processes are started/supervised.
+CMD ["/bin/bash", "/app/entrypoint.sh"]
 ```
+
+**`Caddyfile`** (new file, repo root):
+
+```caddyfile
+:8080 {
+	# The Reflex backend owns these — the websocket event channel, uploads,
+	# the 9 custom /api/* PDF/report routes, and health checks. reverse_proxy
+	# handles the WebSocket Upgrade transparently, no extra config needed.
+	@backend path /_event* /_upload* /api/* /ping /_health*
+	handle @backend {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# Everything else: the static export. try_files falls back to index.html
+	# for any path that isn't a literal file, so a direct load/refresh of a
+	# client-routed page (e.g. GET /tenants) still works, not just in-app
+	# navigation.
+	handle {
+		root * /app/.web/build/client
+		try_files {path} /index.html
+		file_server
+	}
+}
+```
+
+**`entrypoint.sh`** (new file, repo root):
+
+```bash
+#!/bin/bash
+set -e
+
+reflex run --env prod --backend-only --backend-host 127.0.0.1 --backend-port 8000 &
+BACKEND_PID=$!
+
+caddy run --config /app/Caddyfile --adapter caddyfile &
+CADDY_PID=$!
+
+# Minimal supervision for Cycle 3.1's "prove it works" bar: if EITHER process
+# exits (crash or otherwise), tear down the other and exit non-zero, so
+# `docker ps` / a future Container Apps replica correctly reports the
+# container as failed rather than silently serving a half-broken app (e.g.
+# Caddy still answering static files with a dead backend behind it). A real
+# process manager (tini + supervisor, or splitting Caddy into its own
+# sidecar) is a Cycle 3.2+ hardening item if this proves flaky — not needed
+# to prove the container works at all.
+wait -n "$BACKEND_PID" "$CADDY_PID"
+EXIT_CODE=$?
+kill "$BACKEND_PID" "$CADDY_PID" 2>/dev/null || true
+exit "$EXIT_CODE"
+```
+
+`wait -n` needs `bash` (it's not in POSIX `sh`/dash, Debian's default `/bin/sh`) — that's why the
+Dockerfile's `CMD` explicitly invokes `/bin/bash /app/entrypoint.sh` rather than relying on the
+shebang + exec bit alone.
 
 Build with the matching value explicitly, rather than relying on the `ARG` default silently agreeing
 with itself:
@@ -331,9 +381,14 @@ Notes baked into the comments above, restated:
 - Port **8080** is a deliberate convention distinct from every local-dev port already in use
   (3000/8000/3002/8002) so a running container is never confused with a local session. Cycle 3.2
   picks whatever `ingress.targetPort` it wants at deploy time — this is not a constraint on that.
+  Internal port **8000** (the Reflex backend) is loopback-only by design — bound to `127.0.0.1`, not
+  `0.0.0.0`, so it isn't reachable even if someone adds `-p 8000:8000` at `docker run` time.
 - Do **not** add a `HEALTHCHECK` that queries the database — `/ping` is Reflex's own built-in liveness
   endpoint (used by `Start-LucidPM.ps1` today) and answers without touching SQL. A DB-dependent health
   check would flap unhealthy during a legitimate Azure serverless resume.
+- Caddy's `:8080` site block (a bare port, no domain name) never attempts automatic HTTPS/ACME — it's
+  plain HTTP inside the container, which is correct here; TLS termination is Container Apps ingress's
+  job in Cycle 3.2, not this image's.
 
 ### Open question carried to Cycle 3.2 — the baked absolute API URL
 
@@ -370,8 +425,10 @@ Current (`docs/Deployment.md:5`):
 LucidPM runs locally only, on Mark's dev machine, against a local SQL Server Express instance. There is no staging or production deployment, no CI/CD pipeline, and no Docker/infrastructure-as-code in this repo.
 ```
 Replace with a short "Containerization" section noting the Dockerfile exists, what it does (single
-image, single exposed port 8080, ODBC 18, contained-user SQL auth), and that it is verified locally
-only — no registry push, no Container App yet (that's Cycle 3.2, tracked in the roadmap).
+exposed port 8080 via a Caddy reverse proxy — Caddy serves the static frontend export directly and
+proxies the websocket/`/api/*`/health routes to the Reflex backend on internal-only `127.0.0.1:8000`,
+ODBC 18, contained-user SQL auth), and that it is verified locally only — no registry push, no
+Container App yet (that's Cycle 3.2, tracked in the roadmap).
 
 Also fix line 19, which is now stale in the other direction:
 ```
@@ -391,8 +448,16 @@ The rotation is done (2026-09-09) — drop "its rotation runbook is pending."
   risk) or a missing/misspelled env var, not the retry/Fernet mechanisms themselves.
 - **Windows auth.** Never test `LUCIDPM_SQL_AUTH=windows` in the container — `Trusted_Connection=yes`
   cannot work on Linux against this server. Always `sql` auth with `lucidpm_app`.
-- **`pages/*.py` application logic.** Nothing here should require an app-code change beyond the
-  possible `LucidPM.py` static-mount fallback in Step 0/1, which is additive and env-gated.
+- **`pages/*.py` and `LucidPM.py` application logic.** No app-code change is needed for this cycle at
+  all — the Caddy reverse-proxy design (Step 0/2) resolves the frontend-serving problem entirely
+  outside application code.
+- **Caddy's TLS/ACME behavior.** The `Caddyfile`'s `:8080` block is a bare port with no domain name —
+  do not add a `tls` directive or a real hostname; that would make Caddy attempt automatic HTTPS
+  certificate provisioning, which cannot work inside a container with no public DNS name and isn't
+  this cycle's job (Container Apps ingress owns TLS in Cycle 3.2).
+- **The internal backend port.** Reflex's backend binds to `127.0.0.1:8000` deliberately — never
+  change that to `0.0.0.0`, and never add `-p 8000:8000` when testing. Caddy is the only thing that
+  should ever reach it.
 - **Local dev scripts** (`Start-LucidPM.ps1`, `Start-LucidPM-Azure.ps1`) — untouched; they still target
   the un-containerized `.venv` workflow.
 - **Cycle 3.2 concerns** — no GHCR account/token creation, no `az containerapp create`, no Entra app
@@ -409,12 +474,13 @@ The rotation is done (2026-09-09) — drop "its rotation runbook is pending."
 
 - [ ] Docker Desktop's **engine** is running — `docker info` succeeds (not just the app being
       installed; confirm before assuming a build failure is code-related).
-- [ ] Step 0 spike completed; the "does Reflex serve its own export" question is answered and
-      recorded (which path — native or manual mount), with `REFLEX_API_URL` set to match the
-      backend's actual port *before* the export step (see Step 0) — otherwise a URL mismatch can
-      masquerade as a native-serving failure.
-- [ ] `docker build --build-arg REFLEX_API_URL=http://localhost:8080 -t lucidpm:dev .` succeeds.
+- [ ] Verify the pinned `CADDY_VERSION` (`2.8.4` as drafted) is still a current release at
+      `https://github.com/caddyserver/caddy/releases` — bump the `ARG` default if not.
+- [ ] `docker build --build-arg REFLEX_API_URL=http://localhost:8080 -t lucidpm:dev .` succeeds
+      (builder stage's `reflex export` + both apt/binary installs in the runtime stage).
 - [ ] `docker run --rm lucidpm:dev whoami` → `lucidpm`, not `root`.
+- [ ] `docker run --rm lucidpm:dev caddy validate --config /app/Caddyfile --adapter caddyfile` →
+      confirms the Caddyfile syntax is valid before ever starting the full container.
 - [ ] `docker run --rm lucidpm:dev sh -c 'ls -la /app.env 2>&1; ls -la /app/.env 2>&1'` → confirms
       `.env` is **not** present inside the image (the `.dockerignore` did its job).
 - [ ] `docker run --rm lucidpm:dev sh -c 'ls db/ 2>&1'` — confirms no `TenantCRM*.sql` /`.bacpac` files
@@ -465,15 +531,23 @@ The rotation is done (2026-09-09) — drop "its rotation runbook is pending."
 - [ ] ODBC connects successfully — **first-ever test of `_odbc_brace`/`UID={}`/`PWD={}` on unixODBC**
       (H58 review finding, flagged since 2026-09-07). If login fails but the same credentials work
       from Windows, this escaping is the prime suspect — try a password without `}`/`;`/`=` to isolate.
-- [ ] `docker logs` shows no unhandled exception on startup or on first request.
+- [ ] `docker logs` shows no unhandled exception on startup or on first request; both `reflex run` and
+      `caddy run` should have clean startup lines.
 - [ ] `docker inspect --format='{{.State.Health.Status}}' <container>` → `healthy` after the start
-      period.
+      period. Because the healthcheck goes through Caddy to `/ping` (not straight to the backend),
+      `healthy` here proves the whole chain, not just one process.
+- [ ] Confirm port isolation: from the host, `curl http://localhost:8000/ping` should **fail to
+      connect** (nothing published on 8000) — only 8080 is reachable.
+- [ ] Confirm `entrypoint.sh`'s supervision actually works: `docker exec <container> pkill -f
+      "reflex run"` and confirm the **whole container exits** shortly after (check `docker ps`), not
+      that Caddy silently keeps serving static files with a dead backend behind it.
 
 ### C — housekeeping
 
 - [ ] `docs/Deployment.md` reconciled (Step 3).
-- [ ] This handoff records, for Cycle 3.2's benefit: the exact export output path found in Step 0,
-      whether the native or manual-mount path was used, and any unixODBC surprises.
+- [ ] This handoff records, for Cycle 3.2's benefit: the exact export output path used, any unixODBC
+      surprises, and whether `entrypoint.sh`'s minimal supervision held up under the port-isolation and
+      backend-crash checks above.
 - [ ] The roadmap's "Open decisions to resolve" table gets a row for the baked-absolute-URL question
       (rebuild-per-environment vs. same-origin relative URLs) — see the section above — so Cycle 3.2
       starts with a decision already made, not rediscovers this.
@@ -489,7 +563,9 @@ survival, scale-to-zero) is Cycle 3.2 — do not attempt it here.
 c:\Inspirion\Dev\TenantCRM\LucidPM\
   Dockerfile                  ← new, Step 2
   .dockerignore                ← new, Step 1
-  LucidPM\LucidPM.py           ← conditional edit, Step 0 (only if native serving doesn't work)
+  Caddyfile                    ← new, Step 2 (reverse proxy + static file serving, port 8080)
+  entrypoint.sh                 ← new, Step 2 (starts + minimally supervises Reflex backend + Caddy)
+  .env.docker                   ← new, gitignored, NOT committed (Validation B — holds real secrets)
   docs\Deployment.md            ← Step 3
 ```
 
