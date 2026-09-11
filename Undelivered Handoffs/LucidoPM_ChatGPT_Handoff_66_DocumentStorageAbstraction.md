@@ -37,6 +37,22 @@ implementation — proves the round-trip Cycle 4.2 needs*
 *of it) so a collision fails loudly. Extended the same fail-loud posture to the local backend's*
 *`save()`, which had the identical silent-overwrite exposure via a plain `open(..., "wb")` — not*
 *explicitly asked, but the same bug class in the other implementation of the same interface contract.*
+*Revised a third time 2026-09-11 (Codex pre-implementation review, round 3 — 1 final conflict,*
+*accepted): round 2 fixed the doubled `Generated\Generated` segment, but the local path still wasn't*
+*byte-identical to today — it now nested every generated package under*
+*`Generated\<lease-id>\<timestamp>_<uuid>_<filename>.pdf` instead of today's flat*
+*`Generated\<filename>.pdf`. Removing the double-prefix bug isn't the same claim as preserving today's*
+*behavior, and H66 promised the latter. Fixed by redesigning the interface so each backend owns its*
+*own naming/collision strategy instead of a single shared key built by a common helper:*
+*`DocumentStorage.save()` now takes `(lease_id, filename, data)`, not a pre-built key string. The local*
+*implementation uses this to reproduce today's exact convention — flat `Generated/<filename>.pdf` with*
+*the original counter-suffix retry (`_2`, `_3`, ...) — genuinely byte-identical, not just*
+*non-doubled. The Blob implementation uses it to build its own collision-proof*
+*`Generated/<lease-id>/<timestamp>_<full-uuid>_<filename>` key with `overwrite=False`, entirely*
+*internally — `save_generated_package()` is now a thin, backend-agnostic wrapper that no longer builds*
+*any key itself. This also means `get_document_storage()`'s local branch reverts to*
+*`generated_folder(...)` (round 2's fix to that line is undone — the actual bug was never there, it was*
+*in what the shared key-builder handed to a `Generated`-rooted local backend).*
 *Azure Migration — Stage 4, Cycle 4.1. Low/medium risk — narrow, additive, no behavior change on the
 default path.*
 
@@ -157,16 +173,28 @@ same workaround already used in the Cycle 2.2 and 3.2 validation docs.
 see Handoff 66). Selected by LUCIDPM_STORAGE_BACKEND: "local" (default, today's
 behavior, unchanged) | "azure_blob". Only wired into the generated-package
 write/read pair — source PDFs, uploads, and splits are untouched this cycle.
+
+save() takes (lease_id, filename, data) rather than a pre-built key: each
+implementation owns its own naming and collision-avoidance convention, since
+"one shared key scheme" turned out to force either a local-path regression
+(nesting under lease_id when today's layout is flat) or an unsafe Blob key
+(reusing today's flat, non-unique name). Local reproduces today's exact
+behavior; Blob builds something collision-proof. Neither has to compromise
+for the other.
 """
 from __future__ import annotations
 
+import datetime
 import os
+import uuid
 from typing import Protocol
 
 
 class DocumentStorage(Protocol):
-    def save(self, relative_key: str, data: bytes) -> str:
-        """Persist data under relative_key. Returns the identifier to store as StoredFilePath."""
+    def save(self, lease_id: int, filename: str, data: bytes) -> str:
+        """Persist data for a lease's generated package. Returns the identifier
+        to store as StoredFilePath. Each implementation decides its own
+        key/path convention and how it avoids collisions."""
 
     def read(self, identifier: str) -> bytes:
         """Return the raw bytes for a previously-saved identifier."""
@@ -176,21 +204,27 @@ class DocumentStorage(Protocol):
 
 
 class LocalFilesystemStorage:
-    """Today's behavior, unchanged. identifier == an absolute local path, exactly
-    like the current StoredFilePath values."""
+    """Today's exact behavior — genuinely byte-identical, not just
+    non-doubled. identifier == an absolute local path, same as today's
+    StoredFilePath values. lease_id is accepted (interface parity with the
+    Blob implementation) but unused here, matching the fact that today's
+    convention never keyed by lease at all."""
 
     def __init__(self, root: str):
         self._root = root
 
-    def save(self, relative_key: str, data: bytes) -> str:
-        target = os.path.join(self._root, relative_key)
+    def save(self, lease_id: int, filename: str, data: bytes) -> str:
+        target = os.path.join(self._root, filename)
         os.makedirs(os.path.dirname(target), exist_ok=True)
-        if os.path.exists(target):
-            # Same fail-loud posture as the Blob backend below: with a full
-            # uuid4 in the key (Step 2), a real collision should be
-            # cryptographically implausible — so treat one as an error, not
-            # something to silently overwrite.
-            raise RuntimeError(f"Storage key already exists, refusing to overwrite: {target}")
+        # The exact counter-suffix retry the original merge_pdf_files() used
+        # (_2, _3, ...) — ported forward unchanged, not replaced with a
+        # fail-loud check. This already guarantees no collision by
+        # construction; there's nothing to "fail loudly" about.
+        stem, ext = os.path.splitext(target)
+        counter = 2
+        while os.path.exists(target):
+            target = f"{stem}_{counter}{ext}"
+            counter += 1
         with open(target, "wb") as f:
             f.write(data)
         return target
@@ -204,8 +238,10 @@ class LocalFilesystemStorage:
 
 
 class AzureBlobStorage:
-    """identifier == the blob name within the fixed container (not a URL, not a
-    local path) — e.g. "Generated/2026-lease-package.pdf"."""
+    """identifier == the blob name within the fixed container (not a URL, not
+    a local path) — e.g. "Generated/42/20260911_143022_<uuid>_MyPackage.pdf".
+    lease_id is folded into the key here specifically because, unlike local,
+    this backend needs real collision-proofing, not just interface parity."""
 
     def __init__(self, connection_string: str, container: str):
         from azure.storage.blob import BlobServiceClient  # deferred: only needed for this backend
@@ -214,14 +250,16 @@ class AzureBlobStorage:
             connection_string
         ).get_container_client(container)
 
-    def save(self, relative_key: str, data: bytes) -> str:
+    def save(self, lease_id: int, filename: str, data: bytes) -> str:
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique = uuid.uuid4().hex  # full 128-bit UUID, not truncated
+        key = f"Generated/{lease_id}/{stamp}_{unique}_{filename}"
         # overwrite=False is the SDK's own default, kept explicit here: with a
-        # full uuid4 in the key (Step 2), a real collision should be
-        # cryptographically implausible — so a collision raises
-        # azure.core.exceptions.ResourceExistsError rather than silently
-        # replacing an existing package's actual content.
-        self._container.upload_blob(name=relative_key, data=data, overwrite=False)
-        return relative_key
+        # full uuid4 in the key, a collision should be cryptographically
+        # implausible — so one raises azure.core.exceptions.ResourceExistsError
+        # rather than silently replacing an existing package's actual content.
+        self._container.upload_blob(name=key, data=data, overwrite=False)
+        return key
 
     def read(self, identifier: str) -> bytes:
         return self._container.download_blob(identifier).readall()
@@ -236,11 +274,12 @@ _BLOB_STORAGE: DocumentStorage | None = None
 
 
 def get_document_storage(storage_root: str | None = None) -> DocumentStorage:
-    """local backend: a fresh LocalFilesystemStorage per call, rooted at the
-    caller's storage_root (falls back to DEFAULT_DOCUMENT_ROOT) — this must
-    NOT be cached across calls, since storage_root reflects the admin-
-    configurable LeaseDocumentStorageRoot setting and can differ by caller.
-    Constructing it is cheap (no I/O), so no caching is needed or wanted.
+    """local backend: a fresh LocalFilesystemStorage per call, rooted at
+    generated_folder(caller's storage_root or DEFAULT_DOCUMENT_ROOT) — exactly
+    what merge_pdf_files() used to compute itself. Must NOT be cached across
+    calls, since storage_root reflects the admin-configurable
+    LeaseDocumentStorageRoot setting and can differ by caller. Constructing it
+    is cheap (no I/O), so no caching is needed or wanted.
 
     azure_blob backend: a cached singleton instead — storage_root is
     irrelevant to it (the blob container is fixed by LUCIDPM_BLOB_CONTAINER,
@@ -249,13 +288,15 @@ def get_document_storage(storage_root: str | None = None) -> DocumentStorage:
     """
     backend = os.getenv("LUCIDPM_STORAGE_BACKEND", "local").strip().lower()
     if backend == "local":
-        from LucidPM.pages.lease_documents_pdf import DEFAULT_DOCUMENT_ROOT, normalize_storage_root
+        from LucidPM.pages.lease_documents_pdf import DEFAULT_DOCUMENT_ROOT, generated_folder
 
-        # normalize_storage_root(), NOT generated_folder() — save_generated_package()'s
-        # key already starts with "Generated/"; generated_folder() also appends
-        # "Generated", and stacking both would double it
-        # (...\Generated\Generated\<lease-id>\... instead of ...\Generated\<lease-id>\...).
-        return LocalFilesystemStorage(normalize_storage_root(storage_root or DEFAULT_DOCUMENT_ROOT))
+        # generated_folder() — restored from round 2's normalize_storage_root()
+        # change. The doubled "Generated\Generated" bug was never really here;
+        # it was in save() receiving a key that itself started with
+        # "Generated/" on top of an already-"Generated"-rooted local backend.
+        # Now that save() takes a bare filename (see the interface above), this
+        # is exactly what merge_pdf_files() used to compute for itself.
+        return LocalFilesystemStorage(generated_folder(storage_root or DEFAULT_DOCUMENT_ROOT))
     if backend == "azure_blob":
         global _BLOB_STORAGE
         if _BLOB_STORAGE is None:
@@ -316,20 +357,15 @@ def save_generated_package(
     data: bytes, lease_id: int, output_name: str, storage_root: str | None = None
 ) -> tuple[str, str]:
     """Persist merged package bytes. Returns (identifier_for_StoredFilePath,
-    friendly_filename_for_GeneratedFileName) — kept separate because the
-    identifier is now collision-proof (not human-friendly) under either
-    backend, so it can no longer double as the display filename the way
-    os.path.basename(output_path) used to."""
+    friendly_filename_for_GeneratedFileName). A thin, backend-agnostic
+    wrapper — it builds no key itself; each DocumentStorage implementation
+    decides its own naming/collision convention (see document_storage.py),
+    which is what lets local stay byte-identical while Blob gets a
+    collision-proof key."""
     from LucidPM.document_storage import get_document_storage
 
     filename = safe_pdf_filename(output_name)
-    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    unique = uuid.uuid4().hex  # full 128-bit UUID — not truncated. A collision
-    # needs to be cryptographically implausible, not just "unlikely enough to
-    # overwrite" — that's what justifies both save() implementations failing
-    # loudly on a collision (above) instead of needing a retry loop.
-    key = f"Generated/{lease_id}/{stamp}_{unique}_{filename}"
-    identifier = get_document_storage(storage_root).save(key, data)
+    identifier = get_document_storage(storage_root).save(lease_id, filename, data)
     return identifier, filename
 ```
 
@@ -413,7 +449,8 @@ This was the call site the original draft missed entirely — it has the identic
 disk-based-validation-then-basename pattern as call site 1, and would have broken under the Blob
 backend in exactly the same way, undetected until someone tried to regenerate a package.
 
-Add `import io` and `import uuid` near the top of `lease_documents_pdf.py`.
+Add `import io` near the top of `lease_documents_pdf.py` (`uuid` is no longer needed here — it moved
+into `document_storage.py`'s `AzureBlobStorage.save()`, which is the only place that builds a key).
 
 ### Step 3 — wire the read side: `LucidPM.py`, `/api/lease-generated-pdf`
 
@@ -523,9 +560,14 @@ same question returns for Stage 5.4's custom domain.
 
 - [ ] `LUCIDPM_STORAGE_BACKEND` unset (or `local`) — generate a lease package from a **text-only**
       template (avoids the unrelated stale-path issue), confirm it downloads correctly via
-      `/api/lease-generated-pdf`. **Check the file actually landed at
-      `<root>\Generated\<lease-id>\<timestamp>_<uuid>_<filename>.pdf`** — a single `Generated`
-      segment, not `Generated\Generated\...` (the exact bug this revision fixed).
+      `/api/lease-generated-pdf`. **Check the file actually landed at exactly
+      `<root>\Generated\<filename>.pdf`** — flat, no `<lease-id>` or timestamp/uuid nesting. This is
+      the actual byte-identical-to-today check; the doubled-`Generated` bug from round 2 is gone, but
+      that alone doesn't prove this.
+- [ ] **Local collision behavior unchanged** — generate two packages with the same package name (or
+      whatever reproduces a same-filename collision today); confirm the second gets the original
+      `_2`-suffixed name, not an error and not a silent overwrite — exactly today's behavior, not the
+      Blob backend's fail-loud one.
 - [ ] **Regeneration, local backend** — regenerate that same package (the second call site,
       `lease_package_builder.py` ~2279). This is the path the original draft missed; confirm it still
       works and produces a new `LeaseGeneratedDocuments` row with its own correct file.
@@ -553,11 +595,14 @@ same question returns for Stage 5.4's custom domain.
       and `LUCIDPM_BLOB_CONNECTION_STRING` is missing — don't let it silently fall back to local.
 - [ ] `import LucidPM.LucidPM` still exits 0 (the standard post-change import check this repo uses).
 - [ ] `docs/Deployment.md` reconciled (Step 6).
-- [ ] **Fail-loud collision check (either backend)** — manually call `save()` twice with the *same*
-      key (e.g. in a scratch script) and confirm the second call raises (`RuntimeError` for local,
-      `azure.core.exceptions.ResourceExistsError` for blob) rather than silently replacing the first
-      write. Doesn't need to happen through the real UI — this is checking the interface contract, not
-      a real generation flow (a genuine key collision shouldn't occur in normal use with a full uuid4).
+- [ ] **Blob fail-loud collision check** — manually call `AzureBlobStorage.save()` twice with the same
+      `(lease_id, filename)` (e.g. in a scratch script, or by monkeypatching `uuid.uuid4` to a fixed
+      value for one test run) and confirm the second call raises
+      `azure.core.exceptions.ResourceExistsError` rather than silently replacing the first write.
+      Doesn't need to happen through the real UI — checking the interface contract, not a real
+      generation flow (a genuine collision shouldn't occur in normal use with a full uuid4). This does
+      **not** apply to the local backend, which intentionally retries with a suffix instead — see the
+      collision-behavior-unchanged item above.
 
 **Done when:** both backends work locally, proven with a real write + read against the actual Azure
 Blob container. Cycle 4.2 (deploy the updated image, generate a PDF in the live Container App, scale
