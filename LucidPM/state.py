@@ -599,7 +599,7 @@ class AppState(rx.State):
     @rx.var
     def db_label(self) -> str:
         if SINGLE_DB_NAME is not None:
-            return "PRODUCTION"
+            return "TEST" if SINGLE_DB_NAME == TEST_DB_NAME else "PRODUCTION"
         return "TEST" if self.use_test_db else "PRODUCTION"
 
     @rx.var
