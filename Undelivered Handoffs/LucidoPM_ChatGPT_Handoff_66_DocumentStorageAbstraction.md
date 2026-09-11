@@ -1,7 +1,28 @@
 # LucidoPM — ChatGPT Handoff 66
 *Storage abstraction for generated lease package PDFs: local filesystem today, Azure Blob as a second
 implementation — proves the round-trip Cycle 4.2 needs*
-*Prepared: 2026-09-11*
+*Prepared: 2026-09-11 · revised 2026-09-11 (Codex pre-implementation review, 3 questions + 2*
+*corrections, all accepted):*
+*(1) Collision-proof blob keys — confirmed real: `Generated/<filename>` + `overwrite=True` would let a*
+*same-named later package silently replace an earlier one's actual blob content while the earlier*
+*`LeaseGeneratedDocuments` row still points at that now-wrong content. Fixed: the key now bakes in*
+*lease ID + timestamp + a short UUID, built once before persisting — see the redesigned Step 2. (2)*
+*Regeneration — confirmed and a real miss: `merge_pdf_files()` is also called from the regeneration*
+*path (`lease_package_builder.py` ~2282), not just first generation (~1581), and that second call site*
+*has the identical disk-based `os.path.isfile`/`os.path.getsize`/`page_count(path)` post-write*
+*validation that breaks under the Blob backend — the original draft only looked at the first call*
+*site. Both are now in scope, sharing one new helper. (3) Storage-account connection string —*
+*confirmed as intended: local Cycle 4.1 validation only, gitignored `.env`; Cycle 4.2 moves the*
+*deployed app to a scoped SAS token or managed identity before the account key ever reaches the*
+*Container App — stated explicitly now rather than left as a soft aside.*
+*Two corrections folded in: the local backend was hardcoding `DEFAULT_DOCUMENT_ROOT`, silently*
+*ignoring a caller's configured `LeaseDocumentStorageRoot` (`storage_root` parameter) — not*
+*byte-identical to today. And the callers' own disk-based post-write validation*
+*(`os.path.isfile`/`os.path.getsize`/`page_count`) needed to go — `merge_pdf_files()` now validates the*
+*merged PDF itself, on the in-memory `PdfWriter`/bytes, before either backend ever sees it, and both*
+*call sites' now-redundant (and Blob-broken) validation blocks are deleted.*
+*Also folds in: `docs/Deployment.md` still describes Cycle 3.2 as not-yet-done (no image pushed, no*
+*Container App) — stale since Gate 3 passed; corrected as part of this handoff (Step 6).*
 *Azure Migration — Stage 4, Cycle 4.1. Low/medium risk — narrow, additive, no behavior change on the
 default path.*
 
@@ -63,10 +84,27 @@ def merge_pdf_files(section_paths: Iterable[str], output_name: str, storage_root
         writer.write(f)
     return target
 ```
-Called from `LucidPM/pages/lease_package_builder.py:1581` (`output_path = merge_pdf_files(...)`),
-which then validates it (`os.path.isfile`, `page_count()` — the latter calls `PdfReader(path)`
-again, `lease_documents_pdf.py:209-211`) and inserts `output_path` as `StoredFilePath` in
-`LeaseGeneratedDocuments` (`lease_package_builder.py:1595-1600`).
+**Two call sites, not one** — the first draft only accounted for the first:
+- **First generation**, `lease_package_builder.py:1581`: `output_path = merge_pdf_files(pdf_paths_to_merge, self.package_name.strip(), root)`,
+  then `os.path.isfile(output_path)` / `os.path.getsize(output_path)` / `page_count(output_path)`
+  (lines 1582–1589), then `filename = os.path.basename(output_path)` (1591), then INSERT into
+  `LeaseGeneratedDocuments` (1595–1600).
+- **Regeneration**, `lease_package_builder.py:2282`: identical shape —
+  `output_path = merge_pdf_files(pdf_paths_to_merge, regen_name, root)`, then the same
+  `os.path.isfile`/`os.path.getsize`/`page_count` block (2284–2288), then `filename =
+  os.path.basename(output_path)` (2290), then INSERT (2296–2308). `source_lease_id` is in scope here,
+  same as `self.selected_lease_id` is at the first site.
+
+Both sites' post-write validation calls real filesystem functions (`os.path.isfile`, `os.path.getsize`,
+`PdfReader(path)` inside `page_count`) directly on whatever `merge_pdf_files()` returns. Under the
+Blob backend that return value is a blob key string, not a real path — every one of those calls would
+fail or behave wrong. **Both sites' validation blocks must be deleted, not made storage-aware** — see
+Step 2, which moves equivalent (better) validation inside `merge_pdf_files()` itself, using the
+in-memory `PdfWriter`, before either backend ever gets involved.
+
+Both sites also do `filename = os.path.basename(output_path)` for `GeneratedFileName` — under the new
+key shape (see Step 2) that would extract the collision-proofing stamp, not the friendly name. Fixed
+by returning the friendly filename separately, computed once, rather than derived from the identifier.
 
 **The read side** — `LucidPM/LucidPM.py:787-822`, the `/api/lease-generated-pdf` endpoint:
 ```python
@@ -157,6 +195,10 @@ class AzureBlobStorage:
         ).get_container_client(container)
 
     def save(self, relative_key: str, data: bytes) -> str:
+        # overwrite=True is a defensive default, not load-bearing: Step 2's key
+        # construction (lease id + timestamp + short uuid) makes a genuine
+        # collision astronomically unlikely, so this should never actually
+        # trigger a replace in practice.
         self._container.upload_blob(name=relative_key, data=data, overwrite=True)
         return relative_key
 
@@ -169,31 +211,38 @@ class AzureBlobStorage:
         return self._container.get_blob_client(identifier).exists()
 
 
-_STORAGE: DocumentStorage | None = None
+_BLOB_STORAGE: DocumentStorage | None = None
 
 
-def get_document_storage() -> DocumentStorage:
-    """Lazy singleton, mirrors the module-level config pattern in state.py."""
-    global _STORAGE
-    if _STORAGE is not None:
-        return _STORAGE
+def get_document_storage(storage_root: str | None = None) -> DocumentStorage:
+    """local backend: a fresh LocalFilesystemStorage per call, rooted at the
+    caller's storage_root (falls back to DEFAULT_DOCUMENT_ROOT) — this must
+    NOT be cached across calls, since storage_root reflects the admin-
+    configurable LeaseDocumentStorageRoot setting and can differ by caller.
+    Constructing it is cheap (no I/O), so no caching is needed or wanted.
 
+    azure_blob backend: a cached singleton instead — storage_root is
+    irrelevant to it (the blob container is fixed by LUCIDPM_BLOB_CONTAINER,
+    not by the local-disk setting), and constructing a BlobServiceClient has
+    real per-call overhead worth avoiding.
+    """
     backend = os.getenv("LUCIDPM_STORAGE_BACKEND", "local").strip().lower()
     if backend == "local":
         from LucidPM.pages.lease_documents_pdf import DEFAULT_DOCUMENT_ROOT, generated_folder
 
-        _STORAGE = LocalFilesystemStorage(generated_folder(DEFAULT_DOCUMENT_ROOT))
-    elif backend == "azure_blob":
-        conn_str = os.getenv("LUCIDPM_BLOB_CONNECTION_STRING", "")
-        container = os.getenv("LUCIDPM_BLOB_CONTAINER", "lucidpm-documents")
-        if not conn_str:
-            raise RuntimeError(
-                "LUCIDPM_STORAGE_BACKEND=azure_blob requires LUCIDPM_BLOB_CONNECTION_STRING."
-            )
-        _STORAGE = AzureBlobStorage(conn_str, container)
-    else:
-        raise RuntimeError(f"LUCIDPM_STORAGE_BACKEND={backend!r} is not valid — use 'local' or 'azure_blob'.")
-    return _STORAGE
+        return LocalFilesystemStorage(generated_folder(storage_root or DEFAULT_DOCUMENT_ROOT))
+    if backend == "azure_blob":
+        global _BLOB_STORAGE
+        if _BLOB_STORAGE is None:
+            conn_str = os.getenv("LUCIDPM_BLOB_CONNECTION_STRING", "")
+            container = os.getenv("LUCIDPM_BLOB_CONTAINER", "lucidpm-documents")
+            if not conn_str:
+                raise RuntimeError(
+                    "LUCIDPM_STORAGE_BACKEND=azure_blob requires LUCIDPM_BLOB_CONNECTION_STRING."
+                )
+            _BLOB_STORAGE = AzureBlobStorage(conn_str, container)
+        return _BLOB_STORAGE
+    raise RuntimeError(f"LUCIDPM_STORAGE_BACKEND={backend!r} is not valid — use 'local' or 'azure_blob'.")
 ```
 
 Follow the `state.py` fail-fast convention (H58/H60/H63 precedent): an invalid/incomplete config
@@ -201,13 +250,20 @@ raises immediately with a named error, never silently degrades. This one raises 
 first use rather than `ConfigError` at import time — it's genuinely lazy (matches `get_fernet()`'s
 laziness, H63) since most of the app never touches document storage at all.
 
-### Step 2 — wire the write side: `lease_documents_pdf.py`, `merge_pdf_files()`
+### Step 2 — split `merge_pdf_files()`, add `save_generated_package()`, fix both call sites
 
-Current (lines 1173–1199, see Current State above) writes to a real local path and returns it.
-Replace the body from the `writer = PdfWriter()` line down:
+Current `merge_pdf_files()` (lines 1173–1199, see Current State above) does three things in one
+function: merge pages, write to a real local path, return that path. Split it: merging+validating
+(pure, storage-agnostic) separate from persisting (needs a `lease_id` for the collision-proof key,
+which only the callers have in scope).
 
+**Replace `merge_pdf_files()` entirely with:**
 ```python
-def merge_pdf_files(section_paths: Iterable[str], output_name: str, storage_root: str | None = None) -> str:
+def merge_pdf_files(section_paths: Iterable[str]) -> bytes:
+    """Merge the given PDF files in page order. Returns the merged PDF's bytes.
+    Validates internally (non-empty input, non-zero resulting page count) so
+    callers no longer need their own post-merge disk-based checks — those
+    broke under a non-filesystem storage backend anyway."""
     paths = list(section_paths or [])
     missing = [p for p in paths if not p or not os.path.isfile(p)]
     if missing:
@@ -220,35 +276,120 @@ def merge_pdf_files(section_paths: Iterable[str], output_name: str, storage_root
         reader = PdfReader(path)
         for page in reader.pages:
             writer.add_page(page)
+    if len(writer.pages) <= 0:
+        raise RuntimeError("Merged PDF has no pages.")
 
     buffer = io.BytesIO()
     writer.write(buffer)
     data = buffer.getvalue()
-
-    # Validate before persisting — matches the existing page_count() check the
-    # caller used to do against the file on disk, just against the in-memory
-    # bytes instead, so it works identically for either storage backend.
     if not data:
         raise RuntimeError("Merged PDF produced no bytes.")
+    return data
+
+
+def save_generated_package(
+    data: bytes, lease_id: int, output_name: str, storage_root: str | None = None
+) -> tuple[str, str]:
+    """Persist merged package bytes. Returns (identifier_for_StoredFilePath,
+    friendly_filename_for_GeneratedFileName) — kept separate because the
+    identifier is now collision-proof (not human-friendly) under either
+    backend, so it can no longer double as the display filename the way
+    os.path.basename(output_path) used to."""
+    from LucidPM.document_storage import get_document_storage
 
     filename = safe_pdf_filename(output_name)
-    from LucidPM.document_storage import get_document_storage
-    storage = get_document_storage()
-    # Uniqueness (the existing counter-suffix loop) still matters for local disk;
-    # for blob it just becomes part of the key. Keep the same filename-collision
-    # behavior either way by asking the backend, not by checking os.path here.
-    target_key = f"Generated/{filename}"
-    return storage.save(target_key, data)
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    unique = uuid.uuid4().hex[:8]
+    # lease_id + timestamp + short uuid: two packages can never collide under
+    # either backend, so no retry/collision-avoidance loop is needed here —
+    # the old local-disk `while os.path.exists(target): ...` counter is
+    # superseded by this key shape, not ported forward.
+    key = f"Generated/{lease_id}/{stamp}_{unique}_{filename}"
+    identifier = get_document_storage(storage_root).save(key, data)
+    return identifier, filename
 ```
 
-Note: the local-disk collision-avoidance loop (`while os.path.exists(target): ...`) that used to live
-here moves into `LocalFilesystemStorage.save()` **only if you want to preserve exact collision
-behavior** — flag this as a decision point for whoever implements: either (a) port the counter loop
-into `LocalFilesystemStorage.save()` so local-backend behavior is unchanged, or (b) accept that this
-cycle changes local collision handling slightly (last-write-wins) since it's such an edge case. **(a)
-is the byte-identical-default-path-safe choice — do that one.**
+**Call site 1 — first generation, `lease_package_builder.py:1577–1600`.** Current:
+```python
+            if not pdf_paths_to_merge:
+                self.form_error = "No valid sections to merge."
+                return
 
-Add `import io` near the top of `lease_documents_pdf.py` if not already present.
+            output_path = merge_pdf_files(pdf_paths_to_merge, self.package_name.strip(), root)
+            if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
+                raise RuntimeError(f"Merged PDF was not created or is empty: {output_path}")
+            try:
+                merged_page_count = page_count(output_path)
+            except Exception as page_ex:
+                raise RuntimeError(f"Merged PDF could not be opened for validation: {page_ex}")
+            if merged_page_count <= 0:
+                raise RuntimeError(f"Merged PDF has no pages: {output_path}")
+
+            filename = os.path.basename(output_path)
+            now = datetime.datetime.now()
+            notes = self.package_notes.strip()
+
+            run_exec(
+                "INSERT INTO LeaseGeneratedDocuments (LeaseID, TenantID, GeneratedFileName, StoredFilePath, GeneratedOn, PackageNotes) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (self.selected_lease_id, tenant_id if tenant_id > 0 else None, filename, output_path, now, notes),
+                db=self.db,
+            )
+```
+Replace with:
+```python
+            if not pdf_paths_to_merge:
+                self.form_error = "No valid sections to merge."
+                return
+
+            merged_bytes = merge_pdf_files(pdf_paths_to_merge)
+            output_path, filename = save_generated_package(
+                merged_bytes, self.selected_lease_id, self.package_name.strip(), root
+            )
+            now = datetime.datetime.now()
+            notes = self.package_notes.strip()
+
+            run_exec(
+                "INSERT INTO LeaseGeneratedDocuments (LeaseID, TenantID, GeneratedFileName, StoredFilePath, GeneratedOn, PackageNotes) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (self.selected_lease_id, tenant_id if tenant_id > 0 else None, filename, output_path, now, notes),
+                db=self.db,
+            )
+```
+(the `os.path.isfile`/`os.path.getsize`/`page_count` block and the `filename = os.path.basename(...)`
+line are both deleted — `merge_pdf_files()` now validates internally, and `save_generated_package()`
+returns the friendly filename directly.)
+
+**Call site 2 — regeneration, `lease_package_builder.py:2279–2308`.** Current:
+```python
+            root = normalize_storage_root(self.output_storage_root)
+            next_version_number = self._next_generated_version_number(source_lease_id)
+            regen_name = self._build_versioned_package_filename(next_version_number)
+            output_path = merge_pdf_files(pdf_paths_to_merge, regen_name, root)
+
+            if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
+                raise RuntimeError(f"Regenerated PDF was not created or is empty: {output_path}")
+            merged_page_count = page_count(output_path)
+            if merged_page_count <= 0:
+                raise RuntimeError(f"Regenerated PDF has no pages: {output_path}")
+
+            filename = os.path.basename(output_path)
+            now = datetime.datetime.now()
+```
+Replace with:
+```python
+            root = normalize_storage_root(self.output_storage_root)
+            next_version_number = self._next_generated_version_number(source_lease_id)
+            regen_name = self._build_versioned_package_filename(next_version_number)
+            merged_bytes = merge_pdf_files(pdf_paths_to_merge)
+            output_path, filename = save_generated_package(merged_bytes, source_lease_id, regen_name, root)
+            now = datetime.datetime.now()
+```
+This was the call site the original draft missed entirely — it has the identical
+disk-based-validation-then-basename pattern as call site 1, and would have broken under the Blob
+backend in exactly the same way, undetected until someone tried to regenerate a package.
+
+Add `import io` and `import uuid` near the top of `lease_documents_pdf.py`.
 
 ### Step 3 — wire the read side: `LucidPM.py`, `/api/lease-generated-pdf`
 
@@ -267,6 +408,13 @@ Current (lines 809–817):
 Replace with:
 ```python
     from LucidPM.document_storage import get_document_storage
+    # No storage_root here: reads don't know or care which LeaseDocumentStorageRoot
+    # a generation call used — under "local", get_document_storage() falls back to
+    # DEFAULT_DOCUMENT_ROOT when storage_root is None, same as the write side did
+    # before any custom root was configured. If a deployment has ever changed
+    # LeaseDocumentStorageRoot, existing local-path StoredFilePath values already
+    # encode the absolute path they were written under, so this read doesn't need
+    # to reconstruct the root at all — only the write side does.
     storage = get_document_storage()
 
     file_path = str(row.get("StoredFilePath") or "").strip()
@@ -278,8 +426,9 @@ Replace with:
 
     pdf_bytes = storage.read(file_path)
 ```
-(`os.path.basename(file_path)` for the filename fallback still works fine on a blob key like
-`"Generated/foo.pdf"` — no change needed there.)
+The `os.path.basename(file_path)` filename fallback only fires when `GeneratedFileName` is somehow
+empty — with `save_generated_package()` always populating it now, this is dead-but-harmless defensive
+code either way; leave it as-is.
 
 ### Step 4 — dependency
 
@@ -300,6 +449,26 @@ Document the two new vars, inert by default:
 #LUCIDPM_BLOB_CONTAINER=lucidpm-documents
 ```
 
+### Step 6 — `docs/Deployment.md` reconcile (small, unrelated to the code above — do anyway while touching this doc)
+
+Current (`docs/Deployment.md:5`):
+```
+LucidPM has a Docker image definition for local container validation. ... The image has not been pushed to a registry and no Azure Container App exists yet.
+```
+Stale since Gate 3 passed (2026-09-11, commit `9a9fb79`). Replace with something like:
+```
+LucidPM runs as the `lucidpm` Azure Container App (`lucido-apps-env`, westus3), image
+`ghcr.io/mslucido-lab/lucidpm:0.1.0` on private GHCR. Ingress is restricted to Mark's Office/Home IPs
+(no Microsoft Entra yet — Stage 5.3) and the app is locked to `TenantCRM_Test` only
+(`LUCIDPM_SINGLE_DB`). `minReplicas: 0` — the app scales to zero on idle; a cold request takes
+roughly one minute (container scale-up plus any Azure SQL serverless resume). See
+`docs/cycle-3.2-validation.md` for the full Gate 3 record.
+```
+Also fix line 21, which describes the absolute-URL question as still-open for "Cycle 3.2" — Cycle 3.2
+resolved it (rebuilt with the real FQDN baked in via `--build-arg`, since the environment's domain
+suffix is fixed and was already known before the app was created) — reword to say so, and note the
+same question returns for Stage 5.4's custom domain.
+
 ---
 
 ## Do Not Touch
@@ -315,11 +484,14 @@ Document the two new vars, inert by default:
   becomes backend-dependent, exactly like `LUCIDPM_SQL_*`/`LUCIDPM_FERNET_KEY` already work.
 - **Cycle 4.2** — no container image rebuild, no deployment, no actual restart-survival test against
   the live `lucidpm` Container App. This handoff is local-only.
-- **The Azure Blob account key.** Use the connection string for this cycle's local testing only —
-  flag in the handout below that Cycle 4.2 (once this runs inside the deployed container) should move
-  to a scoped SAS token or managed identity rather than the full account key, same least-privilege
-  progression the SQL user (`lucidadmin` → `lucidpm_app`) and GHCR tokens (write → read-only) already
-  went through.
+- **The Azure Blob account key beyond this cycle.** The connection string (full account-key access)
+  is for **local Cycle 4.1 validation only**, in a gitignored `.env` — never committed, never baked
+  into the image. **Cycle 4.2 must not deploy the account-key connection string into the Container
+  App.** Before that cycle runs, switch to a container-scoped SAS token (read+write+list on
+  `lucidpm-documents` only) or a user-assigned managed identity with `Storage Blob Data Contributor`
+  scoped to just that container — the same least-privilege progression the SQL user
+  (`lucidadmin` → `lucidpm_app`) and GHCR tokens (write → read-only) already went through. This is
+  Cycle 4.2's problem to solve, not this one's, but it's a firm requirement, not a soft suggestion.
 
 ---
 
@@ -329,18 +501,33 @@ Document the two new vars, inert by default:
       template (avoids the unrelated stale-path issue), confirm it downloads correctly via
       `/api/lease-generated-pdf`, byte-identical to pre-change behavior. This is the regression check
       — the default path must not change.
+- [ ] **Regeneration, local backend** — regenerate that same package (the second call site,
+      `lease_package_builder.py` ~2279). This is the path the original draft missed; confirm it still
+      works and produces a new `LeaseGeneratedDocuments` row with its own correct file.
+- [ ] **Custom `LeaseDocumentStorageRoot`, local backend** — set a non-default storage root in Admin
+      Settings, generate a package, confirm it's written under *that* root, not
+      `DEFAULT_DOCUMENT_ROOT` — this is the byte-identical-behavior regression the original draft
+      would have broken.
 - [ ] `LUCIDPM_STORAGE_BACKEND=azure_blob` + `LUCIDPM_BLOB_CONNECTION_STRING` pointed at the real
-      `lucidpmdocs24899` account — generate the same package again.
-      - [ ] Confirm the blob actually landed:
+      `lucidpmdocs24899` account — generate a package.
+      - [ ] Confirm the blob landed at the expected collision-proof key shape:
             `az storage blob list --account-name lucidpmdocs24899 --container-name lucidpm-documents --auth-mode login -o table`
+            (expect `Generated/<lease-id>/<timestamp>_<uuid>_<filename>.pdf`, not a bare
+            `Generated/<filename>.pdf`)
       - [ ] Confirm `/api/lease-generated-pdf` retrieves and serves it correctly — byte-identical PDF
             to the local-backend run.
+      - [ ] Confirm `GeneratedFileName` in the DB is the friendly name (e.g. `MyPackage.pdf`), not the
+            collision-proofed key or its basename.
+      - [ ] **Regenerate under the blob backend too** — confirm the second call site works here as
+            well, and that the original package's blob is untouched (two distinct blobs, two distinct
+            `LeaseGeneratedDocuments` rows).
 - [ ] Switching back to `local` afterward still works (no state leaked between backends via the
       lazy-singleton pattern — restart the process between backend switches, don't expect a live
       env-var change mid-run to take effect, same as every other env-driven config in this app).
 - [ ] `get_document_storage()` fails fast with a clear error when `LUCIDPM_STORAGE_BACKEND=azure_blob`
       and `LUCIDPM_BLOB_CONNECTION_STRING` is missing — don't let it silently fall back to local.
 - [ ] `import LucidPM.LucidPM` still exits 0 (the standard post-change import check this repo uses).
+- [ ] `docs/Deployment.md` reconciled (Step 6).
 
 **Done when:** both backends work locally, proven with a real write + read against the actual Azure
 Blob container. Cycle 4.2 (deploy the updated image, generate a PDF in the live Container App, scale
@@ -353,11 +540,14 @@ point.
 
 ```
 c:\Inspirion\Dev\TenantCRM\LucidPM\
-  LucidPM\document_storage.py          ← new, Step 1
-  LucidPM\pages\lease_documents_pdf.py  ← Step 2 (merge_pdf_files, + `import io`)
-  LucidPM\LucidPM.py                    ← Step 3 (/api/lease-generated-pdf, lines 809-817)
-  requirements.txt + pyproject.toml     ← Step 4 (azure-storage-blob)
-  .env.example                          ← Step 5
+  LucidPM\document_storage.py            ← new, Step 1
+  LucidPM\pages\lease_documents_pdf.py    ← Step 2 (merge_pdf_files split + save_generated_package,
+                                              + `import io` + `import uuid`)
+  LucidPM\pages\lease_package_builder.py  ← Step 2 (both call sites: ~1577-1600 and ~2279-2308)
+  LucidPM\LucidPM.py                      ← Step 3 (/api/lease-generated-pdf, lines 809-817)
+  requirements.txt + pyproject.toml       ← Step 4 (azure-storage-blob)
+  .env.example                            ← Step 5
+  docs\Deployment.md                      ← Step 6
 ```
 
 Azure resources this cycle uses (already created, no action needed to provision them):
