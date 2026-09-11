@@ -123,18 +123,21 @@ def _validate_sql_config() -> tuple[int, int, int]:
         ) from None
     if timeout < 0:
         raise ConfigError("LUCIDPM_SQL_LOGIN_TIMEOUT must not be negative.")
-    retries = _non_negative_int_env("LUCIDPM_SQL_CONNECT_RETRIES", "2", maximum=10)
-    backoff = _non_negative_int_env("LUCIDPM_SQL_RETRY_BACKOFF", "3", maximum=30)
+    retries = _non_negative_int_env("LUCIDPM_SQL_CONNECT_RETRIES", "8", maximum=10)
+    backoff = _non_negative_int_env("LUCIDPM_SQL_RETRY_BACKOFF", "4", maximum=30)
     return timeout, retries, backoff
 
 
 # LUCIDPM_SQL_CONNECT_RETRIES — extra connect attempts after the first when the
-# failure looks like an Azure serverless resume (default 2 -> 3 total; 0
+# failure looks like an Azure serverless resume (default 8 -> 9 total; 0
 # disables retry entirely and restores the pre-H60 single-attempt behaviour;
 # capped at 10 so a config typo fails fast at import instead of hanging every
-# connect for minutes).
+# connect for minutes). Default measured at Cycle 2.2 (2026-09-10): observed
+# cold-resume-from-auto-pause times of ~20-30s and ~78s against the real
+# lucidpm-sql-24899 free-tier server, both recovered cleanly.
 # LUCIDPM_SQL_RETRY_BACKOFF — base seconds between attempts; attempt k waits
-# backoff * k (default 3 -> 3 s, then 6 s; capped at 30).
+# backoff * k (default 4 -> 4s, 8s, 12s, ... 32s across 8 retries, ~144s total
+# budget; capped at 30).
 _SQL_LOGIN_TIMEOUT, _SQL_CONNECT_RETRIES, _SQL_RETRY_BACKOFF = _validate_sql_config()
 
 BRAND_PRIMARY = "#4A63A8"

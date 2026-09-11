@@ -2,6 +2,7 @@
 *Connection retry-on-resume for Azure SQL serverless auto-pause*
 *Prepared: 2026-09-08 · revised 2026-09-08 (Codex pre-impl review: narrow to an explicit transient set — no blanket `08*`; re-raise the FIRST transient error; checklist expects 2 retry log lines not 3)*
 *Implemented + committed `d8f6754` 2026-09-08. Claude post-impl review 2026-09-08 → upper-bound the two config vars (`retries` ≤ 10, `backoff` ≤ 30) and move `_non_negative_int_env` above its caller; see "Post-Implementation Review Fixes" below.*
+*Cycle 2.2 checklist D run 2026-09-10 against the real Azure server — defaults bumped to `retries=8`/`backoff=4` (measured against observed ~20–80s cold resumes); see "Cycle 2.2 measurement + default bump" below.*
 *Azure Migration — the expected follow-up after Handoff 58 / Cycle 2.2*
 
 ---
@@ -511,6 +512,32 @@ Deferred to Cycle 2.2 (need a real resume to decide) — see Checklist D:
 
 `.env.example` retry-var comments updated with the caps. No change to the retry
 loop, the predicate, or `get_conn`.
+
+## Cycle 2.2 measurement + default bump (2026-09-10)
+
+Checklist D run against the real `lucidpm-sql-24899` server, via `Start-LucidPM-Azure.ps1`
+with the retry vars raised for the test to `LUCIDPM_SQL_CONNECT_RETRIES=8` /
+`LUCIDPM_SQL_RETRY_BACKOFF=4` (~144s budget across 9 attempts):
+
+- **Both deferred questions resolved.** The predicate fired correctly — this ODBC build's
+  `HY000` connect-failure message does carry the `(40613)`-style native-code substring
+  `_is_transient_connect_error` matches on, confirming the OR-native-code branch (not just
+  the exact-SQLSTATE branch) is what's catching Azure serverless resumes in practice.
+- **The shipped defaults (`retries=2`, `backoff=3`, 9s budget) were NOT enough** — a resume
+  attempted with those values exhausted all 3 attempts and the page errored/hung.
+- **With the bumped values, 3 cold resumes recovered cleanly, no errors:**
+  - App start after an overnight pause: ~20–30s (2 retry lines logged, succeeded on attempt 3).
+  - DB toggle to Prod: ~78s (1m18s) — this one covered **two simultaneous resumes**
+    (`TenantCRM_Test` and `TenantCRM` both cold at once; the toggle re-renders several
+    components that each independently call `get_conn(self.current_db)`, so a couple of
+    calls landed on each side of the flip).
+- **Conclusion:** real resumes range at least ~20–80s, with some variance. `retries=8` /
+  `backoff=4` (~144s budget) covers the observed range with comfortable margin (only 2 of 8
+  retries were needed even on the slowest observed resume) and is now the **committed
+  default** — changed in `state.py` and `.env.example` 2026-09-10, no code/`ConfigError`
+  concerns since both remain under their caps (10 / 30).
+- `08S01`-always-transient and cert-trust-misconfig edge case: not observed either way this
+  cycle; still left as-is per the original review note.
 
 ---
 
