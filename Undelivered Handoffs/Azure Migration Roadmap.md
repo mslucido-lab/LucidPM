@@ -223,6 +223,24 @@ everything ≈ 6–12 months.
   New non-blocking follow-up: a frontend DB-toggle-state null-read race exposed by Azure latency,
   re-check at Stage 3. `Start-LucidPM-Azure.ps1` (repo root) is the reusable launcher for future Azure
   test sessions.
+- **2026-09-10 — Handoff 64 written** (`Undelivered Handoffs/LucidoPM_ChatGPT_Handoff_64_ContainerizeReflexODBC.md`,
+  committed `b3044e2`, not started). Cycle 3.1 only — Dockerfile + `.dockerignore`, single container /
+  single exposed port (8080), verified via local `docker build`/`run` against Azure SQL through the
+  Cycle 2.2 `lucidpm_app` user. Explicitly excludes Cycle 3.2 (GHCR, Container App, Entra).
+- **2026-09-11 — Handoff 64 Codex pre-implementation review, 4 points + 1 preflight, all accepted,
+  doc revised.** (1) `REFLEX_API_URL` is baked into the compiled frontend at `reflex export` time
+  (verified against Reflex 0.8.9's own source — `reflex/utils/export.py`, `reflex/reflex.py`), not
+  read at `docker run` — fixed via a Docker build ARG, and Step 0's spike corrected to set the env var
+  *before* exporting (the original ordering could have produced a false "native serving doesn't work"
+  reading from a plain port mismatch). (2) The static-file fallback's `LUCIDPM_FRONTEND_BUILD_DIR` was
+  never actually set — added, conditional on Step 0 needing the fallback. (3) `compileall` ran before
+  `COPY . .`, compiling nothing — reordered. (4) "Single process" reworded to "single container, single
+  exposed port" — `reflex run --backend-only` may supervise more than one OS process; the real
+  acceptance bar is proven by the browser event-channel test. Preflight: Docker Desktop's *engine*
+  (not just the app) must be running before `docker build`. New open decision surfaced and added to
+  the table above: the baked-absolute-URL approach won't survive Cycle 3.2 unchanged (Container Apps
+  URL differs from `localhost:8080`) — same-origin relative URLs are the cleaner fix but unverified,
+  to be resolved before Cycle 3.2 starts, not mid-cycle.
 - **Next:** Stage 3 — containerize and deploy. Largely de-risked by the Portfolio Manager precedent
   (shared Container Apps environment `lucido-apps-env`, GHCR pull-token pattern, ODBC 18 base image
   already proven in production). The residual HIGH risk is Reflex-specific: the frontend/backend split
@@ -514,6 +532,7 @@ storage account. **Never shared:** the application databases.
 | ~~Does the free offer cover 1 database or more per subscription?~~ | ~~Gate 1~~ | **RESOLVED 2026-09-06:** up to **10** free GP databases per subscription, each with its **own** 100k vCore-sec + 32 GB/month allowance (not shared). `TenantCRM` + `TenantCRM_Test` = 2/10. Region locked to westus3 for all free DBs. |
 | ~~Prod/Test toggle in cloud builds~~ | ~~Cycle 0.3~~ | **RESOLVED 2026-09-06, refined 2026-09-07:** toggle **stays** in cloud (single-user tool, both DBs on Azure). Optional `LUCIDPM_SINGLE_DB=<name>` hides it for a future multi-user deployment. **Cost of keeping it:** the PM knowledge share bars using the server admin in cloud, so the cloud build needs a dedicated contained SQL user — and contained users are per-DB, so the same user + password must be created in **both** `TenantCRM` and `TenantCRM_Test`. `lucidadmin` is Cycle 2.2 (local smoke test) only. |
 | Reflex single-container topology | Cycle 3.1 | Export static frontend, serve from backend process |
+| Baked absolute `REFLEX_API_URL` vs. same-origin relative URLs | Before Cycle 3.2 (raised by Handoff 64's pre-impl review, 2026-09-11) | Cycle 3.1 bakes a fixed local URL via a Docker build ARG — fine for a local-only image. Before Cycle 3.2 pushes to Container Apps, decide: rebuild per environment (simple, but "the image" isn't really one portable artifact) vs. same-origin relative URLs (cleaner, works unmodified across local/temp-URL/custom-domain, but unverified against Reflex 0.8.9 — needs its own spike). Default recommendation: attempt the relative-URL spike first; fall back to per-environment rebuild if Reflex 0.8.9 doesn't support it. |
 | Document identifier scheme | Cycle 5.1 | Opaque key stored in DB, blob path derived in code |
 | Entra ID scope | Cycle 5.3 | Single-user / personal directory |
 

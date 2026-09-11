@@ -1,6 +1,17 @@
 # LucidoPM — ChatGPT Handoff 64
 *Containerize LucidPM: a single Docker image running Reflex + ODBC Driver 18, verified locally against Azure SQL*
-*Prepared: 2026-09-10*
+*Prepared: 2026-09-10 · revised 2026-09-11 (Codex pre-implementation review, 4 points + 1 preflight, all accepted):*
+*(1) `REFLEX_API_URL` is baked into the compiled frontend bundle by `reflex export` — setting it at*
+*`docker run` time is too late, and Step 0's original wording (export first, then run the backend on a*
+*different port) would have given a false failure. Fixed: set it as a Docker build ARG, and set it*
+*before `reflex export` in Step 0 too. Verified against Reflex 0.8.9's own source — see Step 0.*
+*(2) The static-file fallback's `LUCIDPM_FRONTEND_BUILD_DIR` was never actually set anywhere — added,*
+*conditional on Step 0 needing the fallback. (3) `compileall` ran before `COPY . .`, compiling nothing —*
+*moved after. (4) "Single process" reworded to "single container, single exposed port" — `reflex run*
+*--backend-only` is a CLI launcher and may supervise more than one OS process; the real bar is one port*
+*serving frontend + backend + websocket + `/api/*`, proven by the browser event-channel test, not by*
+*counting processes. Plus: Docker Desktop's engine must be running (installed but stopped is not*
+*enough) before Step 2's `docker build`.*
 *Azure Migration — Stage 3, Cycle 3.1. HIGH risk — this is the cycle the roadmap flags as most likely to blow the schedule.*
 
 ---
@@ -25,11 +36,19 @@ websocket-through-ingress, scale-to-zero) is Cycle 3.2's problem, not this one's
 
 Why this is HIGH risk: Reflex normally runs as **two** processes during development — a Vite/bun
 frontend dev server (port 3000) and a Python/FastAPI backend (port 8000) — glued together by
-`reflex run`. A production container needs **one** process serving everything on **one** port,
-because that's what an ingress (or a person hitting `docker run -p`) can reasonably point at. Getting
-that collapse right, without breaking the websocket event channel the whole UI depends on, is the
-actual unknown. This handoff front-loads that specific question as a 15-minute, no-Docker spike
-(Step 0) before committing to a full multi-stage build.
+`reflex run`. A production container needs **one exposed port** serving everything, because that's
+what an ingress (or a person hitting `docker run -p`) can reasonably point at. (Not literally one OS
+process — `reflex run --backend-only` is itself a CLI launcher and may supervise more than one; what
+actually matters is one port answering for frontend + backend + websocket + `/api/*`, which is what
+the Validation Checklist proves, not process-counting.) Getting that collapse right, without breaking
+the websocket event channel the whole UI depends on, is the actual unknown. This handoff front-loads
+that specific question as a 15-minute, no-Docker spike (Step 0) before committing to a full
+multi-stage build.
+
+**Preflight:** Docker Desktop is installed on this machine but its engine may not be running —
+*installed* is not the same as *running* (hit exactly this in the PM migration per the knowledge-share
+doc's "Problems encountered" table). Start Docker Desktop and confirm `docker info` succeeds before
+Step 2's `docker build`. Step 0 needs no Docker at all — it runs directly in the existing `.venv`.
 
 ---
 
@@ -95,24 +114,40 @@ npm-style packages) and `curl`/`ca-certificates`, not a `nodejs` apt package.
 Do this **before** writing the Dockerfile. It's the one real unknown, and it's cheap to check without
 a container at all.
 
+**Set the API URL before exporting — this is baked into the compiled bundle, not read at runtime.**
+Verified directly from Reflex 0.8.9's own source: the plain `reflex export` CLI command
+(`reflex/reflex.py:export()`) calls `export_utils.export()` with no `api_url` argument, so it falls
+through to `config = get_config()` — which resolves `REFLEX_API_URL` from the environment at the
+moment `build.build()` runs (`reflex/utils/export.py`) and writes that value into the static frontend
+output. If the env var isn't set to match wherever the backend will actually listen, the exported JS
+silently calls the wrong host/port and Step 0 will look like a failure ("does Reflex serve its own
+export?") when the real bug is just a URL mismatch.
+
 In the existing local `.venv` (any branch, doesn't need Azure):
 
 ```powershell
+$env:REFLEX_API_URL = "http://localhost:8080"
 .venv\Scripts\reflex.exe export --frontend-only --no-zip
 ```
 
 Note exactly where the static build lands (expected: `.web/build/client/`, but confirm — Reflex's
-export layout can shift between versions and 0.8.9 hasn't been checked here before). Then:
+export layout can shift between versions and 0.8.9 hasn't been checked here before). Then, **in the
+same shell** (so `REFLEX_API_URL` is still set — it also governs where the *Python* side thinks the
+API is, via `state.api_base_url()`, independently of what got baked into the JS):
 
 ```powershell
 .venv\Scripts\reflex.exe run --env prod --backend-only --backend-port 8080
 ```
 
-Open `http://localhost:8080/` in a browser.
+Open `http://localhost:8080/` in a browser, and open devtools' Network tab before clicking anything.
 
-- **If the real compiled app loads** (not a blank page, not a 404, not Reflex's dev-mode "frontend not
-  running" message) — Reflex's own backend serves the exported static build automatically. Proceed to
-  Step 1 with the Dockerfile as written below; no code change needed in `LucidPM.py`.
+- **If the real compiled app loads and the Network tab shows requests going to `localhost:8080`** (not
+  a blank page, not a 404, not Reflex's dev-mode "frontend not running" message, and — importantly —
+  not requests silently failing against `8000`) — Reflex's own backend serves the exported static
+  build automatically. Proceed to Step 1 with the Dockerfile as written below; no code change needed
+  in `LucidPM.py`. If the page loads but the Network tab shows failed calls to `8000`, that's the URL
+  mismatch this revision fixed, not a native-serving failure — recheck that `REFLEX_API_URL` was set
+  before the `export` command specifically.
 - **If it 404s / serves nothing at `/`** — Reflex expects a separate static host in production mode.
   Fall back to the manual mount, added to `LucidPM/LucidPM.py` **after all `app.add_page(...)` calls**
   (the mount is a catch-all at `/` and must not be registered before Reflex's own routes, or it will
@@ -197,11 +232,22 @@ COPY . .
 # Confirm this actually excludes what Step 1 lists — .dockerignore applies to
 # this COPY the same as any other.
 
+# REFLEX_API_URL is read by `reflex export` at build.build() time (Reflex
+# 0.8.9, reflex/utils/export.py) and baked into the compiled JS bundle — it is
+# NOT something `docker run -e` can fix later. Passed as a build ARG so Cycle
+# 3.1's local value (this container's own published port) and Cycle 3.2's
+# eventual Container Apps URL can differ without touching the Dockerfile —
+# see "Open question carried to Cycle 3.2" below for why this must change
+# again before that cycle, not just get a new --build-arg value.
+ARG REFLEX_API_URL=http://localhost:8080
+ENV REFLEX_API_URL=$REFLEX_API_URL
+
 # Verify the exact output path against Step 0's finding before trusting this.
 RUN reflex export --frontend-only --no-zip
 
 # ---- Stage 2: runtime image ----
 FROM python:3.12.10-slim-bookworm
+ARG REFLEX_API_URL=http://localhost:8080
 
 # Microsoft ODBC Driver 18 — standard Debian 12 (bookworm) recipe.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -220,12 +266,17 @@ RUN useradd --create-home --shell /usr/sbin/nologin lucidpm
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt \
-    && python -m compileall -q .
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+# compileall must run AFTER the application source is copied in — running it
+# against a directory that only holds requirements.txt (the original ordering)
+# compiles nothing useful. Runs as root, before the ownership change below.
+RUN python -m compileall -q .
+
 # Adjust this path once Step 0 confirms the real export location, and drop it
-# entirely if the manual-mount fallback wasn't needed.
+# (and the LUCIDPM_FRONTEND_BUILD_DIR line below) entirely if the manual-mount
+# fallback wasn't needed.
 COPY --from=builder /app/.web/build/client ./.web/build/client
 
 # Fix the exact PM lesson from the knowledge-share doc: container ran non-root
@@ -235,18 +286,35 @@ USER lucidpm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    LUCIDPM_ENV=cloud
+    LUCIDPM_ENV=cloud \
+    REFLEX_API_URL=$REFLEX_API_URL
+# REFLEX_API_URL here is read at RUNTIME by the live Python process
+# (state.api_base_url() / rx.config.get_config().api_url) to build PDF/report
+# download links — a separate consumer from the JS bundle the builder stage
+# baked. Must match the build-time value above or the two disagree about
+# where "the API" is. Only add the next line if Step 0 needed the fallback:
+# ENV LUCIDPM_FRONTEND_BUILD_DIR=/app/.web/build/client
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/ping').status==200 else 1)"
 
-# Single process, single port, serves frontend + backend + the /api/* routes.
-# --backend-only skips starting the (now unnecessary) separate frontend dev
-# server; the exported static build is what actually serves the UI.
+# One container, one exposed port (8080), serving frontend + backend +
+# websocket + the /api/* routes. --backend-only skips starting the separate
+# frontend dev server; the exported static build is what serves the UI. Note:
+# `reflex run` is a CLI launcher and may run more than one OS process under
+# the hood — that's fine. The acceptance bar is "one port answers for
+# everything", proven by Validation Checklist B, not process-counting.
 CMD ["reflex", "run", "--env", "prod", "--backend-only", \
      "--backend-host", "0.0.0.0", "--backend-port", "8080"]
+```
+
+Build with the matching value explicitly, rather than relying on the `ARG` default silently agreeing
+with itself:
+
+```powershell
+docker build --build-arg REFLEX_API_URL=http://localhost:8080 -t lucidpm:dev .
 ```
 
 Notes baked into the comments above, restated:
@@ -259,6 +327,34 @@ Notes baked into the comments above, restated:
 - Do **not** add a `HEALTHCHECK` that queries the database — `/ping` is Reflex's own built-in liveness
   endpoint (used by `Start-LucidPM.ps1` today) and answers without touching SQL. A DB-dependent health
   check would flap unhealthy during a legitimate Azure serverless resume.
+
+### Open question carried to Cycle 3.2 — the baked absolute API URL
+
+Baking `REFLEX_API_URL` into the frontend bundle at build time (Step 2) works for Cycle 3.1 — the
+value is fixed and known (`http://localhost:8080`) because this cycle only runs the image on the
+machine that built it. It will **not** survive Cycle 3.2 unchanged: an image built with
+`http://localhost:8080` baked in, then deployed to a Container App, would ship a browser bundle that
+tries to call back to the *deploying machine's* localhost — wrong from any other browser, and wrong
+again the moment the temporary `*.azurecontainerapps.io` hostname is later replaced by a custom domain
+(Stage 5.4), since that's yet another absolute URL.
+
+Two ways to resolve this, to be decided **before** Cycle 3.2, not rediscovered mid-cycle:
+1. **Rebuild per environment** — pass a different `--build-arg REFLEX_API_URL=...` for each target
+   (local test, Container Apps temp URL, eventual custom domain) and publish a distinct image each
+   time. Simple, guaranteed to work, but means "the image" isn't really one portable artifact — Cycle
+   3.2's plan to push one versioned tag to GHCR would need to mean one *build recipe*, not one *image*,
+   across environments.
+2. **Same-origin / relative URLs** — if Reflex can be told to emit relative paths (no host/port at
+   all) for its API/websocket calls, the browser naturally targets whatever host served the page,
+   and the exact same image works unmodified in local Docker, Container Apps, and behind a future
+   custom domain. This is the architecturally cleaner answer and avoids the "which URL was this image
+   built with" bookkeeping entirely — but it is **not verified against Reflex 0.8.9** and needs a
+   spike of its own (does `config.api_url` accept a bare path, does the websocket upgrade logic in
+   `reflex/constants/event.py` cope with one) before it can be trusted.
+
+Cycle 3.1 does not need to answer this — option 1 with a fixed local value is sufficient to prove the
+container works at all. Record the decision in the roadmap's "Open decisions to resolve" table before
+starting Cycle 3.2.
 
 ### Step 3 — `docs/Deployment.md` reconcile (small)
 
@@ -304,9 +400,13 @@ The rotation is done (2026-09-09) — drop "its rotation runbook is pending."
 
 ### A — build, no Azure needed
 
+- [ ] Docker Desktop's **engine** is running — `docker info` succeeds (not just the app being
+      installed; confirm before assuming a build failure is code-related).
 - [ ] Step 0 spike completed; the "does Reflex serve its own export" question is answered and
-      recorded (which path — native or manual mount).
-- [ ] `docker build -t lucidpm:dev .` succeeds.
+      recorded (which path — native or manual mount), with `REFLEX_API_URL` set to match the
+      backend's actual port *before* the export step (see Step 0) — otherwise a URL mismatch can
+      masquerade as a native-serving failure.
+- [ ] `docker build --build-arg REFLEX_API_URL=http://localhost:8080 -t lucidpm:dev .` succeeds.
 - [ ] `docker run --rm lucidpm:dev whoami` → `lucidpm`, not `root`.
 - [ ] `docker run --rm lucidpm:dev sh -c 'ls -la /app.env 2>&1; ls -la /app/.env 2>&1'` → confirms
       `.env` is **not** present inside the image (the `.dockerignore` did its job).
@@ -318,13 +418,17 @@ The rotation is done (2026-09-09) — drop "its rotation runbook is pending."
 
 - [ ] `docker run -p 8080:8080` with the H58 env vars (`LUCIDPM_SQL_SERVER`, `LUCIDPM_SQL_AUTH=sql`,
       `LUCIDPM_SQL_USER=lucidpm_app`, `LUCIDPM_SQL_PASSWORD`, `LUCIDPM_PROD_DB`, `LUCIDPM_TEST_DB`,
-      `LUCIDPM_SQL_TRUST_CERT=no`) + `LUCIDPM_FERNET_KEY` (from `.env`) + `REFLEX_API_URL=http://localhost:8080`.
+      `LUCIDPM_SQL_TRUST_CERT=no`) + `LUCIDPM_FERNET_KEY` (from `.env`). **Do not** expect
+      `-e REFLEX_API_URL=...` at `docker run` time to fix a wrong frontend bundle — that value is
+      already fixed, baked in at `docker build` time via `--build-arg`. Only pass it at `run` time if
+      you deliberately want it to differ from the build-time value (it shouldn't, for this cycle).
 - [ ] `http://localhost:8080/` loads the **real compiled app** in a browser — not blank, not a 404,
-      not Reflex's "frontend not running" placeholder.
+      not Reflex's "frontend not running" placeholder. Check devtools' Network tab: requests should
+      target `localhost:8080`, not `8000` — a `8000` sighting means the build-arg didn't take.
 - [ ] Click into at least one page that requires the event channel (e.g. the Test/Prod toggle, or
       opening a tenant detail) — **this is the core risk this cycle exists to retire**: confirm the
-      websocket-driven UI actually updates inside a single-process container, not just that the
-      initial HTML painted.
+      websocket-driven UI actually updates through the container's single exposed port, not just that
+      the initial HTML painted.
 - [ ] A PDF download works (e.g. Rent Roll) — proves `REFLEX_API_URL` / `state.api_base_url()` and the
       custom `/api/*` routes on `api` still resolve correctly alongside whatever serves the frontend.
 - [ ] ODBC connects successfully — **first-ever test of `_odbc_brace`/`UID={}`/`PWD={}` on unixODBC**
@@ -339,6 +443,9 @@ The rotation is done (2026-09-09) — drop "its rotation runbook is pending."
 - [ ] `docs/Deployment.md` reconciled (Step 3).
 - [ ] This handoff records, for Cycle 3.2's benefit: the exact export output path found in Step 0,
       whether the native or manual-mount path was used, and any unixODBC surprises.
+- [ ] The roadmap's "Open decisions to resolve" table gets a row for the baked-absolute-URL question
+      (rebuild-per-environment vs. same-origin relative URLs) — see the section above — so Cycle 3.2
+      starts with a decision already made, not rediscovers this.
 
 **Done when:** all of A and B pass. Gate 3 (temp public URL via Container Apps, ingress websocket
 survival, scale-to-zero) is Cycle 3.2 — do not attempt it here.
