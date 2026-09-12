@@ -46,6 +46,8 @@ findstr.txt
 /db/TenantCRM*.sql
 /db/data_updates/h68_source_pdf_blob_manifest.json
 /db/data_updates/h68_source_pdf_blob_manifest.rollback.sql
+/db/data_updates/h69_prod_source_pdf_blob_manifest.json
+/db/data_updates/h69_prod_source_pdf_blob_manifest.rollback.sql
 
 # Local-only Container Apps deployment config (Handoff 65) — holds the GHCR
 # pull token, SQL password, and Fernet key inline. Never commit.

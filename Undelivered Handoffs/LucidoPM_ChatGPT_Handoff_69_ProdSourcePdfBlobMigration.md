@@ -68,8 +68,10 @@ around quietly.** Read directly (`db/data_updates/2026-09-11_h68_source_pdf_blob
 **Prod's stale-path count needs re-verifying, not assumed from memory.** CLAUDE.md's backlog
 previously noted "~4 active rows in Prod" with the old `C:\Dell Inspirion\...` root, from before H68's
 work. That figure predates this session's cleanup activity and should not be trusted as current — Step
-1 below re-runs the same counting queries H68 used, against `TenantCRM` this time, as the first real
-step, not an assumption.
+0 below re-runs the same counting queries H68 used, against `TenantCRM` this time, as the first real
+step, not an assumption. (H68's original query counted rows *not* matching the old prefix, which
+answers "how many non-stale rows exist," not "is the prerequisite satisfied," directly — Step 0's
+query below fixes that.)
 
 **The Blob container is shared, and that's fine.** Both Test's already-migrated rows and Prod's
 new rows live in the same `lucidpm-documents` container — there's no collision risk: every key
@@ -88,13 +90,19 @@ Run against `TenantCRM` (not `TenantCRM_Test`):
 ```sql
 SELECT COUNT(*) FROM dbo.LeaseDocumentSections WHERE StoredFilePath IS NOT NULL;
 SELECT COUNT(*) FROM dbo.LeaseDocumentSections
-  WHERE StoredFilePath IS NOT NULL AND StoredFilePath NOT LIKE 'C:\Dell Inspirion%';
+  WHERE StoredFilePath LIKE 'C:\Dell Inspirion%';
 SELECT COUNT(*) FROM dbo.LeaseSourceDocuments WHERE StoredFilePath IS NOT NULL;
+SELECT COUNT(*) FROM dbo.LeaseSourceDocuments
+  WHERE StoredFilePath LIKE 'C:\Dell Inspirion%';
 ```
-If any rows still carry the old `C:\Dell Inspirion\...` root, resolve that first — same two options
-CLAUDE.md already documents (junction, or the one-time bulk `UPDATE ... REPLACE(...)`) — against Prod
-specifically. A row unreadable locally cannot be migrated to Blob any more for Prod than it could for
-Test.
+The second and fourth queries directly count rows still on the stale prefix — a `LIKE` match, not a
+`NOT LIKE` exclusion — so a non-zero result there directly answers "is the prerequisite still
+unresolved," rather than requiring a subtraction from the total. (H68's original phrasing used `NOT
+LIKE`, which counts non-stale rows instead — harmless for a migration that already succeeded, but
+worth stating correctly here rather than copying it forward.) If either stale count is non-zero,
+resolve that first — same two options CLAUDE.md already documents (junction, or the one-time bulk
+`UPDATE ... REPLACE(...)`) — against Prod specifically. A row unreadable locally cannot be migrated to
+Blob any more for Prod than it could for Test.
 
 ### Step 1 — write a new, Prod-targeted migration script
 
@@ -122,17 +130,34 @@ Test.
    diff-review in this step's opening instruction: if the diff shows anything beyond the 5 points
    above, that's a red flag to stop and re-check before running it against real tenant data.
 
-### Step 2 — dry run
+`.gitignore` already covers this script's output (`h69_prod_source_pdf_blob_manifest.json` /
+`.rollback.sql`, mirroring H68's two entries) — done as part of writing this handoff, no separate step
+needed.
+
+### Step 2 — open a short maintenance window
+
+The script protects each row it touches (the manifest sequencing plus the optimistic
+`AND StoredFilePath=?` guard on its `UPDATE` means a genuinely concurrent edit to a row already in
+flight fails loudly rather than corrupting anything) — but that's row-level safety, not a substitute
+for avoiding concurrent activity altogether. A source-PDF upload, replacement, or split against Prod
+while this runs could add or alter rows outside the snapshot Step 1's script read at start-up, or just
+make the dry run's reviewed output (Step 3) stale by the time `--commit` (Step 4) actually runs.
+**Stop the local app (or at least avoid any lease-document edits against `TenantCRM`) from immediately
+before Step 3 through Step 5's validation completing.** This is real tenant data with no second
+database to fall back on if the run and normal usage interleave in a confusing way — a short window
+costs little and removes the ambiguity entirely.
+
+### Step 3 — dry run
 
 ```
 .\.venv\Scripts\python.exe db/data_updates/2026-09-12_h69_prod_source_pdf_blob_migration.py
 ```
 (no `--commit` — this is the script's default). Review the printed row count, the fallback count, and
-every planned `azblob:` key. **Do not proceed to Step 3 until this list has been read and makes
+every planned `azblob:` key. **Do not proceed to Step 4 until this list has been read and makes
 sense** — this is the one rehearsal Prod gets; unlike Test, there's no second real database to
 practice on first.
 
-### Step 3 — commit
+### Step 4 — commit
 
 ```
 .\.venv\Scripts\python.exe db/data_updates/2026-09-12_h69_prod_source_pdf_blob_migration.py --commit
@@ -142,7 +167,7 @@ row's Blob upload and SQL `UPDATE`, transitioned to `migrated` (or `failed`, rol
 transaction) once the `UPDATE` commits. **Do not delete local files** — same discipline as H68, they
 stay as a fallback.
 
-### Step 4 — local validation (this handoff's actual "does it work" proof)
+### Step 5 — local validation (this handoff's actual "does it work" proof)
 
 Since the live container can't reach Prod (see What This Is), validate locally through the existing
 Prod/Test toggle:
@@ -158,12 +183,12 @@ Prod/Test toggle:
    still-present local originals (the manifest's `sha256` field makes this a hash comparison, not a
    full byte diff, for the rest).
 
-### Step 5 — explicitly NOT part of this handoff
+### Step 6 — explicitly NOT part of this handoff
 
 Validating this against the *deployed container* requires either lifting `LUCIDPM_SINGLE_DB` or adding
 a second, Prod-facing deployment — both are real decisions (auth, ingress exposure) that belong to
 Stage 5.3, not this migration. **Done for this handoff means "Prod's data is correctly in Blob and
-generates correctly locally," not "Prod is live in the container."** Don't let Step 4 passing be read
+generates correctly locally," not "Prod is live in the container."** Don't let Step 5 passing be read
 as more than that.
 
 ---
@@ -198,9 +223,11 @@ as more than that.
       rollback files are untouched (check their mtimes/contents didn't change).
 - [ ] Every migrated row's manifest entry reaches `migrated` (or is investigated if stuck at
       `uploaded_pending_update`/`failed`).
+- [ ] Local app stopped / lease-document edits against `TenantCRM` avoided from before the dry run
+      through validation completing (Step 2).
 - [ ] Sample of migrated Prod rows verified byte-identical to their local originals (hash match).
 - [ ] Local Prod source/section files still present (not deleted).
-- [ ] **A PDF-backed Prod lease package generates and downloads correctly locally** (Step 4) — this is
+- [ ] **A PDF-backed Prod lease package generates and downloads correctly locally** (Step 5) — this is
       the actual proof, since the container path isn't available.
 - [ ] `TenantCRM_Test` unaffected — spot-check its row count/timestamps are unchanged.
 - [ ] Live Container App's `LUCIDPM_SINGLE_DB` still reads `TenantCRM_Test` — confirm nothing in this
@@ -218,8 +245,12 @@ the standing storage-root UI item, respectively).
 ```
 c:\Inspirion\Dev\TenantCRM\LucidPM\
   db\data_updates\2026-09-12_h69_prod_source_pdf_blob_migration.py   ← new, Step 1 (copy + 5 edits)
-  db\data_updates\h69_prod_source_pdf_blob_manifest.json             ← new, generated by --commit (gitignored)
-  db\data_updates\h69_prod_source_pdf_blob_manifest.rollback.sql     ← new, generated by --commit (gitignored)
+  db\data_updates\h69_prod_source_pdf_blob_manifest.json             ← new, generated by --commit
+                                                                         (gitignored, entry added)
+  db\data_updates\h69_prod_source_pdf_blob_manifest.rollback.sql     ← new, generated by --commit
+                                                                         (gitignored, entry added)
+  .gitignore                                                          ← 2 new lines added, mirroring
+                                                                         H68's entries
 ```
 
 Reference material already in the repo (read, don't modify):
