@@ -36,6 +36,33 @@ everything ≈ 6–12 months.
 
 ## Progress log
 
+- **2026-09-11 — Handoff 68 revised through 4 rounds of pre-implementation review, now
+  implementation-ready.** Not started — Cycle 5.1-early (source-PDF/section Blob migration, pulled
+  forward by the finding in the entry below) is still queued, gated on the standing TOP-PRIORITY
+  stale-path cleanup. Each round found a real, distinct gap, same pattern as H64-H67:
+  1. Write-side treatment wasn't uniform (`save_uploaded_pdf`/`copy_existing_pdf` already produce
+     timestamp-unique names; `split_pdf_pages` needed H66-style backend-owned collision handling) and
+     an invented "admin PDF preview path" step turned out not to exist (grepped `LucidPM.py`'s routes).
+  2. Local dev needs a real dual-source resolver, not an env-var-matching convention — source/section
+     documents are a persistent library (unlike generated packages), so local-path and Blob-key rows
+     will coexist in `TenantCRM_Test` indefinitely. Landed on self-describing `azblob:`-prefixed
+     identifiers with standalone `read_source_document()`/`source_document_exists()` resolvers,
+     independent of `LUCIDPM_STORAGE_BACKEND`. `RelativePath`/`StorageRoot` carry real values for Blob
+     rows (container name + de-prefixed key), not `NULL`. Added a migration rollback manifest.
+  3. The merge boundary itself (`merge_pdf_files()`) was verified to be local-path-only today — an
+     earlier draft's claim that it already demonstrated a blob-agnostic read was wrong and corrected.
+     Defined the actual mixed-input fix (its internal loop resolves each entry, local temp files and
+     `azblob:` sections alike) without changing its external contract. Gave `save_source()` an explicit
+     `kind`/`collision` parameter pair instead of "decide the shape during implementation." Hardened
+     the migration script against writing local paths into Test rows in a default local session, and
+     added state transitions + the full old-row triple to the rollback manifest.
+  4. `get_document_storage()` is rooted at `Generated\`; reusing it for `save_source()` would have
+     doubled the path (`Generated\Admin\...`) — added a sibling `get_source_document_storage()` factory.
+     Phase B's property/category resolution needed an actual `Properties` join for `PropertyName`, not
+     a `PropertyID` passthrough — extended the existing Unlinked/Legacy fallback to cover a dangling
+     `PropertyID` too, not just a missing source-document link.
+  Doc: `Undelivered Handoffs/LucidoPM_ChatGPT_Handoff_68_SourcePdfBlobMigration.md`. Ready to hand to
+  Codex for implementation.
 - **2026-09-11 — Cycle 4.2 / GATE 4 PASSED — POC COMPLETE.** Completed the restart-survival proof left
   outstanding in the entry below: scaled `lucidpm` to zero (`az containerapp update --min-replicas 0`),
   confirmed `replica list` empty, reopened the app from cold, and re-downloaded the same text-only
