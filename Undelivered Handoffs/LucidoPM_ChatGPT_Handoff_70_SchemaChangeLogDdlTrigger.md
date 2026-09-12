@@ -1,6 +1,6 @@
 # LucidoPM — ChatGPT Handoff 70
-*Auto-populate `dbo.SchemaChangeLog` via a DDL trigger, so future schema changes can't go unlogged the
-way 24 of them already have*
+*Auto-populate `dbo.SchemaChangeLog` via a DDL trigger, so future schema changes stop depending on
+someone remembering to log them by hand — the way 24 of them already went unlogged*
 *Prepared: 2026-09-12*
 *Standing backlog item, no Azure dependency. LOW risk to the app (touches no application code, no
 table the app reads/writes), MEDIUM risk to get exactly right on the first try (a badly-written DDL
@@ -21,11 +21,16 @@ The log is exactly as complete as human discipline made it, no more.
 
 **The fix:** a database-level DDL trigger that fires automatically on schema-changing statements and
 writes its own row via `EVENTDATA()` — the SQL Server function that returns the actual executed
-command text as XML. This flips the guarantee from "logged if someone remembered" to "logged because
-the database itself can't make the change without it," and captures the literal T-SQL that ran (up to
-`Notes`' existing 1000-character limit — truncated with a visible marker beyond that, see The Fix), not
-a human's after-the-fact description — so even a change made ad hoc in SSMS with nothing saved to disk
-still leaves a record.
+command text as XML. This flips the default from "logged only if someone remembered" to "logged
+automatically by the database itself, every time the trigger's own insert succeeds" — captures the
+literal T-SQL that ran (up to `Notes`' existing 1000-character limit — truncated with a visible marker
+beyond that, see The Fix), not a human's after-the-fact description, so even a change made ad hoc in
+SSMS with nothing saved to disk normally still leaves a record. **This is a strong default, not an
+absolute guarantee**: the trigger's own `TRY/CATCH` (The Fix, Step 1) deliberately swallows a logging
+failure rather than let it block the actual schema change — a defensible availability tradeoff (a
+broken logging path should never be the reason a real `CREATE`/`ALTER`/`DROP` fails), but it does mean
+a rare, unanticipated failure inside the trigger body itself could still slip through unlogged. That's
+a known, accepted edge case, not a claim that logging is now literally impossible to skip.
 
 **This is not a data-loss recovery for the 24-25 already-missing scripts** — those are gone, this
 doesn't reconstruct them (`db/history/CHANGELOG.md` already documents what's known about each). It
@@ -104,6 +109,9 @@ Create the trigger (Step 1) against Test only, run one harmless `ALTER TABLE ...
 - Run one deliberately long `ALTER TABLE` (padding it with comments or a long column list past 1000
   characters) and confirm the resulting `Notes` value is truncated to `...[TRUNCATED]` rather than
   either erroring or silently ending mid-statement with no indication.
+- Run one DDL statement against an object with a long (close to 128-character) name and confirm the
+  resulting `ScriptName` still ends with the full, intact `#<32-hex-char GUID>` suffix — not cut off by
+  the 255-character limit.
 
 Only after this passes, repeat for local `TenantCRM`, then (separately, since Azure SQL Database does
 not support every DDL-trigger feature server-scoped SQL Server does) verify once against Azure
@@ -142,15 +150,20 @@ BEGIN
 
         -- ScriptName has a UNIQUE index (see Current State) — a timestamp alone isn't a guaranteed-unique
         -- defense (clock resolution isn't guaranteed to match the datatype's stated precision on every
-        -- host), so append a NEWID() fragment. This is the actual collision guarantee; the timestamp is
-        -- for human readability only.
-        DECLARE @scriptName NVARCHAR(255) =
+        -- host), so append a full (not truncated) NEWID() fragment. This is the actual collision
+        -- guarantee; the timestamp is for human readability only. Build the suffix FIRST and truncate
+        -- only the prefix to fit — truncating the whole concatenated string from the right (as an
+        -- earlier draft did) could cut the suffix itself off for a long schema-qualified object name,
+        -- defeating the guarantee for exactly the case most likely to need it.
+        DECLARE @suffix NVARCHAR(80) =
+            ' @ ' + CONVERT(NVARCHAR(30), SYSDATETIME(), 121)
+            + ' #' + REPLACE(CONVERT(NVARCHAR(36), NEWID()), '-', '');
+        DECLARE @prefix NVARCHAR(255) =
             '[AUTO] ' + ISNULL(@eventType, 'DDL')
             + CASE WHEN @objectName IS NOT NULL
-                   THEN ' on ' + ISNULL(@schemaName + '.', '') + @objectName ELSE '' END
-            + ' @ ' + CONVERT(NVARCHAR(30), SYSDATETIME(), 121)
-            + ' #' + LEFT(CONVERT(NVARCHAR(36), NEWID()), 8);
-        IF LEN(@scriptName) > 255 SET @scriptName = LEFT(@scriptName, 255);
+                   THEN ' on ' + ISNULL(@schemaName + '.', '') + @objectName ELSE '' END;
+        IF LEN(@prefix) > 255 - LEN(@suffix) SET @prefix = LEFT(@prefix, 255 - LEN(@suffix));
+        DECLARE @scriptName NVARCHAR(255) = @prefix + @suffix;
 
         INSERT INTO dbo.SchemaChangeLog (ScriptName, AppliedOn, AppliedBy, Notes)
         VALUES (@scriptName, SYSDATETIME(), ISNULL(@loginName, SUSER_SNAME()), @commandText);
@@ -177,6 +190,16 @@ Design notes, matching the two risks in Current State plus two review correction
   it isn't, instead of overclaiming exact fidelity for every possible statement length. The schema
   itself isn't changed (see Do Not Touch) — this handoff works within `NVARCHAR(1000)`, it doesn't
   widen it.
+- **`@data.value(..., 'nvarchar(max)')` was flagged in review as possibly invalid syntax — tested
+  directly, twice, against local SQL Server 2025 Express** (`SELECT @@VERSION`): once with a plain
+  2-level XML variable, once with the actual nested `EVENT_INSTANCE/TSQLCommand/CommandText` shape and
+  a 1500-character value. Both extracted the full value correctly with `QUOTED_IDENTIFIER ON` set (a
+  session-level requirement for any XML data type method, independent of this specific call). `.value()`
+  does accept `nvarchar(max)` as its target type on a local `XML` variable on this engine — the
+  restriction some documentation describes applies to invoking `.value()` directly against an `xml`
+  *column* in certain indexed/computed-column contexts, not a `DECLARE`d variable like `@data` here.
+  **Still re-confirm this in Step 0 against every target**, especially Azure SQL Database, rather than
+  trust one engine's behavior across all four — that's what Step 0 is for regardless.
 - The whole body is wrapped in `TRY/CATCH` with an intentionally empty `CATCH` — a logging failure is
   swallowed, never propagated back to fail the triggering `CREATE`/`ALTER`/`DROP`.
 - Event list is curated to schema objects (`TABLE`, `INDEX`, `VIEW`, `PROCEDURE`, `FUNCTION`,
