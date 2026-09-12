@@ -110,17 +110,15 @@ class AzureBlobStorage:
         self._container.upload_blob(name=key, data=data, overwrite=False)
         return key
 
-    def save_source(
+    def source_identifier(
         self,
         property_name: str,
         document_category: str,
         filename: str,
-        data: bytes,
         *,
         kind: SourceKind = "template",
-        collision: SourceCollision = "unique_name",
     ) -> str:
-        del collision
+        """Return a collision-safe, self-describing source-document identifier."""
         from LucidPM.pages.lease_documents_pdf import slugify
 
         property_key = slugify(property_name or "General")
@@ -130,8 +128,30 @@ class AzureBlobStorage:
             f"Sources/{property_key}/{category_key}{section_segment}/"
             f"{uuid.uuid4().hex}_{filename}"
         )
-        self._container.upload_blob(name=key, data=data, overwrite=False)
         return SOURCE_BLOB_PREFIX + key
+
+    def save_source(
+        self,
+        property_name: str,
+        document_category: str,
+        filename: str,
+        data: bytes,
+        *,
+        kind: SourceKind = "template",
+        collision: SourceCollision = "unique_name",
+        identifier: str | None = None,
+    ) -> str:
+        del collision
+        identifier = identifier or self.source_identifier(
+            property_name, document_category, filename, kind=kind
+        )
+        if not identifier.startswith(SOURCE_BLOB_PREFIX):
+            raise ValueError("Azure source-document identifiers must start with 'azblob:'.")
+        key = identifier.removeprefix(SOURCE_BLOB_PREFIX)
+        if not key:
+            raise ValueError("Azure source-document identifier is missing its Blob key.")
+        self._container.upload_blob(name=key, data=data, overwrite=False)
+        return identifier
 
     def read(self, identifier: str) -> bytes:
         return self._container.download_blob(identifier).readall()

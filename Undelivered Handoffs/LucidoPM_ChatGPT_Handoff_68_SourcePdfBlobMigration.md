@@ -364,12 +364,12 @@ touching any real `TenantCRM_Test` row.
         LeaseSourceDocumentID = LeaseDocumentSections.LeaseSourceDocumentID`, then the same `JOIN
         Properties` off *that* row's `PropertyID`, for both `PropertyName` and `DocumentCategory` —
         confirmed `LeaseDocumentSections` has neither column itself (see Current State).
-      **Use the fixed fallback bucket (`property_name="Unlinked"`, `document_category="Legacy"`)
-      whenever either join comes up empty** — `LeaseSourceDocumentID` is `NULL`/doesn't resolve to a
-      live source row, **or** the resolved `PropertyID` doesn't resolve to a live `Properties` row
-      (dangling FK) — not only the source-link case. Record `fallback_used = true` in the manifest
-      whenever either condition fires, so both kinds of orphaned rows are easy to find and
-      re-categorize by hand later if it matters.
+      A `NULL PropertyID` on an otherwise linked source is the app's valid **General / All Properties**
+      selection, not an orphan; use that label with the row's real category. **Use the fixed fallback
+      bucket (`property_name="Unlinked"`, `document_category="Legacy"`) only when a non-null
+      PropertyID fails to resolve, the source link is absent, or the category is absent.** Record
+      `fallback_used = true` in the manifest for those genuinely orphaned rows, so they are easy to
+      find and re-categorize by hand later if it matters.
    2. Read its bytes and compute a content hash (`sha256`).
    3. **Write the manifest entry with status `uploaded_pending_update`** — table, row ID, old
       `StoredFilePath`, old `RelativePath`, old `StorageRoot` (the full old triple, not just the path —
@@ -475,9 +475,9 @@ touching any real `TenantCRM_Test` row.
       no local files were written as a side effect.
 - [ ] Both `LeaseSourceDocuments` and `LeaseDocumentSections` rows resolve `PropertyName` via the
       `Properties` join (not just a `PropertyID` passthrough) and `LeaseDocumentSections` rows resolve
-      property/category via the `LeaseSourceDocumentID` join; rows hitting the fallback — missing
-      source link **or** dangling `PropertyID` — are flagged `fallback_used` in the manifest and
-      reviewed by hand.
+      property/category via the `LeaseSourceDocumentID` join; a `NULL PropertyID` maps to General / All
+      Properties, while missing source links, dangling non-null IDs, or missing categories are flagged
+      `fallback_used` in the manifest and reviewed by hand.
 - [ ] Migration manifest entry written with status `uploaded_pending_update` **before** each row's Blob
       upload and SQL `UPDATE`, transitioned to `migrated` (or `failed`) after — confirm by checking the
       manifest reflects partial, in-progress state if the script is interrupted early, and that every

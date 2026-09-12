@@ -44,6 +44,8 @@ findstr.txt
 # generated from local SQL Server, contain tenant PII. Never commit.
 # (db/history/*.sql and db/baseline_schema.sql are unaffected.)
 /db/TenantCRM*.sql
+/db/data_updates/h68_source_pdf_blob_manifest.json
+/db/data_updates/h68_source_pdf_blob_manifest.rollback.sql
 
 # Local-only Container Apps deployment config (Handoff 65) — holds the GHCR
 # pull token, SQL password, and Fernet key inline. Never commit.
