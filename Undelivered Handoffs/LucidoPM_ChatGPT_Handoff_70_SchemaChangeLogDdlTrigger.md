@@ -142,10 +142,10 @@ BEGIN
 
         -- Notes is NVARCHAR(1000) (see Current State) — truncate explicitly, with a visible marker,
         -- rather than let an implicit cast silently cut a long command off mid-statement.
-        DECLARE @suffix NVARCHAR(20) = N' ...[TRUNCATED]';
+        DECLARE @truncationSuffix NVARCHAR(20) = N' ...[TRUNCATED]';
         DECLARE @commandText NVARCHAR(1000) =
             CASE WHEN @rawCommand IS NULL THEN NULL
-                 WHEN LEN(@rawCommand) > 1000 THEN LEFT(@rawCommand, 1000 - LEN(@suffix)) + @suffix
+                 WHEN LEN(@rawCommand) > 1000 THEN LEFT(@rawCommand, 1000 - LEN(@truncationSuffix)) + @truncationSuffix
                  ELSE @rawCommand END;
 
         -- ScriptName has a UNIQUE index (see Current State) — a timestamp alone isn't a guaranteed-unique
@@ -155,15 +155,15 @@ BEGIN
         -- only the prefix to fit — truncating the whole concatenated string from the right (as an
         -- earlier draft did) could cut the suffix itself off for a long schema-qualified object name,
         -- defeating the guarantee for exactly the case most likely to need it.
-        DECLARE @suffix NVARCHAR(80) =
+        DECLARE @scriptNameSuffix NVARCHAR(80) =
             ' @ ' + CONVERT(NVARCHAR(30), SYSDATETIME(), 121)
             + ' #' + REPLACE(CONVERT(NVARCHAR(36), NEWID()), '-', '');
         DECLARE @prefix NVARCHAR(255) =
             '[AUTO] ' + ISNULL(@eventType, 'DDL')
             + CASE WHEN @objectName IS NOT NULL
                    THEN ' on ' + ISNULL(@schemaName + '.', '') + @objectName ELSE '' END;
-        IF LEN(@prefix) > 255 - LEN(@suffix) SET @prefix = LEFT(@prefix, 255 - LEN(@suffix));
-        DECLARE @scriptName NVARCHAR(255) = @prefix + @suffix;
+        IF LEN(@prefix) > 255 - LEN(@scriptNameSuffix) SET @prefix = LEFT(@prefix, 255 - LEN(@scriptNameSuffix));
+        DECLARE @scriptName NVARCHAR(255) = @prefix + @scriptNameSuffix;
 
         INSERT INTO dbo.SchemaChangeLog (ScriptName, AppliedOn, AppliedBy, Notes)
         VALUES (@scriptName, SYSDATETIME(), ISNULL(@loginName, SUSER_SNAME()), @commandText);
