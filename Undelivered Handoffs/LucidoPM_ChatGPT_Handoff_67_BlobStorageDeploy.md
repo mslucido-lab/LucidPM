@@ -1,7 +1,23 @@
 # LucidoPM — ChatGPT Handoff 67
 *Deploy Cycle 4.1's storage abstraction to the live Container App with a scoped Blob credential, and
 prove a generated lease PDF survives a scale-to-zero restart — Gate 4, the last gate of the POC*
-*Prepared: 2026-09-11*
+*Prepared: 2026-09-11 · revised 2026-09-11 (Codex pre-implementation review, 3 points, all accepted*
+*+ 1 confirmed):*
+*(1) The app is currently at `minReplicas: 0` — updating the image while it stays there leaves "is the*
+*new revision healthy" ambiguous until some browser request happens to wake it. Fixed: Step 3 now sets*
+*`minReplicas: 1` as part of the deploy, giving a clean, immediate startup signal; Step 5 (the actual*
+*Gate 4 test) is what sets it back to 0, exactly like Cycle 3.2 did. (2) Verified live: the Container*
+*App's ingress currently allows **both** `Mark-Office` (`72.183.200.115/32`) and `Mark-Home`*
+*(`47.184.19.248/32`, added since Cycle 3.2's initial deployment) — my Current State section only*
+*listed the first, stale since I hadn't re-checked. Step 3 now explicitly confirms both survive the*
+*update. (3) `racw` granted an unused `Add` permission — `a` applies to append blobs, and this app's*
+*`upload_blob()` calls create/overwrite whole block blobs (`c`+`w`), never appends to one. Tightened to*
+*`rcw`, with an explicit fallback to `racw` only if the live test rejects it. Also: build the SAS-based*
+*connection string in shell variables and pass the variable (not literal text) to `az containerapp*
+*secret set`, then `unset` both afterward — keeps the token out of Cloud Shell/local command history,*
+*even though Azure's control plane necessarily still receives the value to store the secret. Confirmed:*
+*90 days is the intended POC lifetime; expiry goes in the password manager (same place as the GHCR*
+*pull token), not a repo file.*
 *Azure Migration — Stage 4, Cycle 4.2. Medium risk. Builds directly on Handoff 66
 (Cycle 4.1, committed `cbf2038`, PASSED locally) and reuses the live `lucidpm` Container App from
 Handoff 65 (Cycle 3.2, committed `9a9fb79`).*
@@ -49,8 +65,11 @@ verifies]** (browser-only).
 ## Current State
 
 **Live Container App** (`az containerapp show -n lucidpm -g Lucido-Apps-RG`): `provisioningState:
-Succeeded`, image `ghcr.io/mslucido-lab/lucidpm:0.1.0`, `minReplicas: 0`, ingress restricted to
-`Mark-Office` (`72.183.200.115/32`). This image predates Cycle 4.1 — it has no `document_storage.py`,
+Succeeded`, image `ghcr.io/mslucido-lab/lucidpm:0.1.0`, `minReplicas: 0`. Ingress restrictions
+(`az containerapp ingress access-restriction list`, re-verified live for this handoff): **both**
+`Mark-Office` (`72.183.200.115/32`) and `Mark-Home` (`47.184.19.248/32`, description "Mark home
+network") — the latter was added sometime after Cycle 3.2's initial deployment (H65's own record only
+had `Mark-Office` at creation time). This image predates Cycle 4.1 — it has no `document_storage.py`,
 no `LUCIDPM_STORAGE_BACKEND` support.
 
 **Cycle 4.1 code** (commit `cbf2038`, local checkout): `LucidPM/document_storage.py` +
@@ -72,10 +91,11 @@ az storage container generate-sas \
   --https-only \
   -o tsv
 ```
-Produces a query string like `se=...&sp=racw&spr=https&sv=...&sr=c&sig=...`. `sp=racw` — read, add,
-create, write only. No `d` (delete), no `l` (list) — the app's `AzureBlobStorage` methods
-(`upload_blob`, `download_blob`, `get_blob_client().exists()`) never need either. `sr=c` — scoped to
-the **container**, not the whole storage account.
+Produces a query string like `se=...&sp=racw&spr=https&sv=...&sr=c&sig=...`. This verification run
+used `racw`; **Step 1 below tightens it to `rcw`** — `a` (Add) is for append blobs, and this app never
+appends, it only creates/overwrites whole block blobs. No `d` (delete), no `l` (list) either — the
+app's `AzureBlobStorage` methods (`upload_blob`, `download_blob`, `get_blob_client().exists()`) never
+need them. `sr=c` — scoped to the **container**, not the whole storage account.
 
 ---
 
@@ -87,17 +107,25 @@ the **container**, not the whole storage account.
 expiry=$(date -u -d '+90 days' +%Y-%m-%dT%H:%MZ)
 sas=$(az storage container generate-sas \
   --account-name lucidpmdocs24899 --name lucidpm-documents \
-  --permissions racw --expiry "$expiry" --auth-mode key --https-only -o tsv)
+  --permissions rcw --expiry "$expiry" --auth-mode key --https-only -o tsv)
 ```
+`rcw` (read, create, write) — not `racw`. `a` (Add) applies to append blobs; this app's
+`upload_blob()` calls only ever create/overwrite whole block blobs, never append to one, so `Add` is
+unused. **If the live test in Step 4 rejects the upload with a permission error, retry with `racw`**
+before assuming something else is wrong — that's the one plausible reason to fall back.
+
 Build the connection string `AzureBlobStorage` expects (same format H66's local `.env` testing
-already used, just SAS-signed instead of key-signed):
+already used, just SAS-signed instead of key-signed) **as a shell variable, not literal text** — keeps
+the token out of Cloud Shell/local command history for Step 3:
+```bash
+conn="BlobEndpoint=https://lucidpmdocs24899.blob.core.windows.net/;SharedAccessSignature=${sas}"
 ```
-BlobEndpoint=https://lucidpmdocs24899.blob.core.windows.net/;SharedAccessSignature=<the sas value>
-```
-**Record the expiry date somewhere durable** (`Action Items - Mark.md` or a password-manager note) —
-same operational-reminder pattern already established for the GHCR pull token and (eventually) Entra
-client secrets. A lapsed SAS means the deployed app can't reach Blob storage until it's regenerated
-and re-set as a secret; nothing else breaks (SQL/app logic is unaffected).
+**Record the expiry date in the password manager** — same place the GHCR pull token went, not a repo
+file (`Action Items - Mark.md` is fine for the reminder to check it, but not for the value or the
+date if that feels too exposed — password manager is the safer default). A lapsed SAS means the
+deployed app can't reach Blob storage until it's regenerated and re-set as a secret; nothing else
+breaks (SQL/app logic is unaffected). 90 days is the intended lifetime for this POC stage — not a
+permanent decision, revisit at Stage 5 alongside the managed-identity migration.
 
 ### Step 2 — build and push the new image **[Mark]**
 
@@ -119,13 +147,18 @@ a patch. Keep `:latest` pointed at it too, matching the existing convention.
 ### Step 3 — wire the new image + credential into the live Container App **[Claude via `az`, on request]**
 
 ```bash
-# Add the new secret without touching existing ones (sql-password, ghcrio-lucidpm-pull, etc.)
-az containerapp secret set -n lucidpm -g Lucido-Apps-RG \
-  --secrets blob-connection="BlobEndpoint=https://lucidpmdocs24899.blob.core.windows.net/;SharedAccessSignature=<sas>"
+# Add the new secret without touching existing ones (sql-password, ghcrio-lucidpm-pull, etc.) —
+# $conn is the shell variable from Step 1, never written out as literal text.
+az containerapp secret set -n lucidpm -g Lucido-Apps-RG --secrets blob-connection="$conn"
+unset sas conn   # done with both — nothing left resolvable from shell state after this point
 
-# Update the image and add the 3 storage env vars — --set-env-vars merges, doesn't replace
+# Update the image, add the 3 storage env vars (--set-env-vars merges, doesn't replace), and bring
+# the app to 1 replica for a clean deploy-time health signal — the app is currently at 0, and
+# updating it there would leave "is the new revision healthy" unanswered until some browser request
+# happens to wake it. Step 5 is what sets this back to 0, once Gate 4's proof needs it.
 az containerapp update -n lucidpm -g Lucido-Apps-RG \
   --image ghcr.io/mslucido-lab/lucidpm:0.2.0 \
+  --min-replicas 1 \
   --set-env-vars \
     LUCIDPM_STORAGE_BACKEND=azure_blob \
     LUCIDPM_BLOB_CONTAINER=lucidpm-documents \
@@ -138,10 +171,18 @@ current resource (`az containerapp show -o json`), merging the new image tag + s
 its `properties.template` in place, and sending it back with `az rest --method PUT` — the exact
 recovery Cycle 3.2 used.
 
-Confirm the new revision is healthy before proceeding:
+Confirm the new revision is healthy — now unambiguous, since `minReplicas: 1` means a replica exists
+to check without needing a request to wake one first:
 ```bash
 az containerapp revision list -n lucidpm -g Lucido-Apps-RG -o table
 ```
+
+**Also confirm both ingress restrictions survived the update** (they should — this update never
+touches `configuration.ingress` — but verify, don't assume):
+```bash
+az containerapp ingress access-restriction list -n lucidpm -g Lucido-Apps-RG -o table
+```
+Expect both `Mark-Office` (`72.183.200.115/32`) and `Mark-Home` (`47.184.19.248/32`) still listed.
 
 ### Step 4 — generate a package, confirm it lands in Blob **[Mark verifies, then Claude via `az`]**
 
@@ -197,7 +238,8 @@ was written.
 - **The account-key connection string.** Cycle 4.1's local `.env` value stays local — never becomes
   a Container Apps secret. Only the SAS-based connection string from Step 1 does.
 - **`LUCIDPM_SINGLE_DB=TenantCRM_Test`** — unchanged. This cycle doesn't touch Prod access.
-- **Ingress IP restrictions** — unchanged from Cycle 3.2. Don't loosen them "to make testing easier."
+- **Ingress IP restrictions** — both `Mark-Office` and `Mark-Home` stay as-is. Don't loosen them "to
+  make testing easier," and confirm both survive Step 3's update (see that step) rather than assuming.
 - **Entra, custom domain, production data cutover** — Stages 5.3/5.4/5, not this cycle.
 - **Source-PDF storage, the `storage_root` admin screen, the stale-`StoredFilePath` cleanup** — still
   out of scope, still Cycle 5.1's job (unchanged from H66).
@@ -211,11 +253,15 @@ was written.
 ## Validation Checklist — Gate 4 GO/NO-GO
 
 - [ ] New image (`0.2.0`) built from a checkout confirmed at `cbf2038` or later, pushed to GHCR.
-- [ ] SAS-based connection string generated (90-day expiry, `racw`, container-scoped, HTTPS-only) and
-      set as a **new** Container Apps secret — the account-key connection string never deployed.
-- [ ] Container App updated to the new image; existing SQL/Fernet env vars and ingress restrictions
+- [ ] SAS-based connection string generated (90-day expiry, `rcw` — or `racw` only if `rcw` was
+      rejected — container-scoped, HTTPS-only), built via shell variables (not literal text), and set
+      as a **new** Container Apps secret — the account-key connection string never deployed. Expiry
+      recorded in the password manager. `$sas`/`$conn` unset after use.
+- [ ] Container App updated to the new image + `minReplicas: 1`; existing SQL/Fernet env vars
       confirmed unchanged (`az containerapp show` — spot-check before and after).
-- [ ] New revision reaches `Healthy`.
+- [ ] **Both `Mark-Office` and `Mark-Home` ingress restrictions confirmed still present** after the
+      update (`az containerapp ingress access-restriction list`).
+- [ ] New revision reaches `Healthy` — unambiguous now that a replica exists at `minReplicas: 1`.
 - [ ] A lease package (text-only template) generated through the live app; confirmed present in
       `lucidpm-documents` at the expected key shape.
 - [ ] Container App scaled to zero; `replica list` confirmed empty.
