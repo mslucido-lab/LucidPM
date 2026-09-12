@@ -110,9 +110,14 @@ class DocumentStorage(Protocol):
         collision handling — see the two call-site behaviors below, which differ
         from each other and must be preserved exactly."""
 
-    def read(self, identifier: str) -> bytes: ...   # existing, identifier-agnostic, no change
-    def exists(self, identifier: str) -> bool: ...  # existing, identifier-agnostic, no change
+    def read(self, identifier: str) -> bytes: ...   # existing, generated-packages only, no change
+    def exists(self, identifier: str) -> bool: ...  # existing, generated-packages only, no change
 ```
+Note: source/section reads do **not** go through these two Protocol methods at all — they go through
+the standalone `read_source_document()`/`source_document_exists()` resolver functions described below,
+which dispatch on the identifier's own shape rather than on whichever backend `save_source()` currently
+targets. That split (single-backend writes, identifier-dispatched reads) is deliberate — see "Local dev
+after Phase B" above for why.
 - `LocalFilesystemStorage.save_source()`: writes under `template_folder(property, category)` (or
   `sections_folder(...)` for splits — the caller picks which root to construct and passes it as part
   of `filename`'s path, or `save_source` takes an explicit `subfolder` param; decide the exact shape
@@ -127,14 +132,19 @@ class DocumentStorage(Protocol):
   `Sources/<property>/<category>/Sections/<uuid>_<filename>` for splits) — `overwrite=False`, full
   `uuid.uuid4().hex`, same reasoning as `AzureBlobStorage.save()` in H66. Don't try to reproduce the
   timestamp-suffix or counter-loop conventions for Blob; they're solving a local-disk problem that
-  doesn't apply the same way to Blob's namespace.
-- **`StorageRoot`/`RelativePath` at write time** (see Current State for why these are display-only,
-  not read-path-critical): the three call sites in `lease_documents.py` that currently compute
+  doesn't apply the same way to Blob's namespace. **Return the key prefixed with the `azblob:` scheme**
+  (`azblob:Sources/<property>/...`) — this is what makes the identifier self-describing for the
+  resolver (see "Local dev after Phase B" above); the un-prefixed key is still what's actually stored
+  in Blob, the prefix only exists in the `StoredFilePath` string.
+- **`StorageRoot`/`RelativePath` at write time** — meaningful for both backends, not a NULL/sentinel
+  placeholder: the three call sites in `lease_documents.py` that currently compute
   `rel = relative_to_root(stored_path, root)` need a backend branch. For the local backend, keep this
-  byte-identical. For the Blob backend, **skip `relative_to_root()` entirely** (it's meaningless
-  against a Blob key) — store `RelativePath = NULL` and set `StorageRoot` to a fixed sentinel (e.g.
-  `"azure_blob"`) instead of the local root string, so a human looking at the row can tell which
-  backend it belongs to without cross-referencing `LUCIDPM_STORAGE_BACKEND`.
+  byte-identical. For the Blob backend, skip `relative_to_root()` (it doesn't apply to a Blob key) and
+  instead set `StorageRoot` to the Blob container name (`LUCIDPM_BLOB_CONTAINER`, e.g.
+  `lucidpm-documents`) and `RelativePath` to the key portion of the identifier with the `azblob:`
+  prefix stripped — i.e. exactly what `StoredFilePath` holds minus the scheme, so it stays legible in
+  the admin list and stays in sync with `StoredFilePath` by construction (both derived from the same
+  key at the same call).
 
 **`StorageRoot`/`RelativePath` are display-only, not load-bearing for reads** — confirmed by reading
 every call site. `lease_documents.py` computes `rel = relative_to_root(stored_path, root)` at write
@@ -148,24 +158,39 @@ but since nothing consumes that value functionally, it's a cosmetic gap (an ugly
 list), not a generation-blocking one. Phase A still fixes it properly (see below) rather than leaving
 garbage in the column, but it does not need to block Phase A/B on a bigger redesign.
 
-**Local dev after Phase B — the backend must match how the target DB's rows were actually written,
-same rule that already exists for `LeaseGeneratedDocuments` post-Cycle-4.2.** `DocumentStorage` has no
-cross-backend dispatch — `LocalFilesystemStorage.read()` on a Blob key just fails, and vice versa
-(confirmed by reading `document_storage.py`: `get_document_storage()` picks one backend for the whole
-process from `LUCIDPM_STORAGE_BACKEND`, nothing inspects the identifier shape to route across
-backends). This is an existing, accepted property of the design — not new. Once Phase B rewrites
-`TenantCRM_Test`'s source/section rows to Blob keys, a local run against `TenantCRM_Test` with the
-default `LUCIDPM_STORAGE_BACKEND=local` will show "Missing PDF" for every migrated row, even though
-the original file is still sitting on disk (Do Not Touch forbids deleting it) — because the DB no
-longer points at it. **This is not a new class of problem**: Cycle 4.1's validation notes already
-established that local dev needs `LUCIDPM_STORAGE_BACKEND=azure_blob` (using the account-key
-connection string already in the local, gitignored `.env`) to see Blob-backed rows, for generated
-packages. Phase A doesn't change that contract, it just extends which document types follow it. No
-new resolver/dual-backend logic — document the requirement, don't build around it: **after Phase B,
-local work against `TenantCRM_Test` needs `LUCIDPM_STORAGE_BACKEND=azure_blob` set** (same `.env`
-credential already proven working); local work against local SQL Server Express / local files is
-unaffected (`LUCIDPM_STORAGE_BACKEND=local`, the default, stays correct for that). `TenantCRM` (Prod)
-is untouched by this handoff, so its local dev experience doesn't change at all.
+**Local dev after Phase B needs a dual-source resolver, not just an env-var-matching rule.** An
+earlier revision of this handoff argued the read side could stay single-backend (match
+`LUCIDPM_STORAGE_BACKEND` to whichever backend wrote the row you want to see, the way
+`LeaseGeneratedDocuments` already works). Codex's review correctly pushed back: source/section
+documents are a long-lived library, not a regenerate-and-replace flow like generated packages —
+`TenantCRM_Test` will accumulate **both** local-path rows (anything created locally with the default
+`LUCIDPM_STORAGE_BACKEND=local`, which stays the normal local workflow) **and** Blob-key rows
+(everything Phase B migrates, plus anything created while pointed at `azure_blob`) side by side,
+indefinitely, in the same database. Forcing a global env-var switch per row isn't workable for daily
+use. **Fix: make identifiers self-describing and make reads dispatch on the identifier itself, not on
+whichever backend is currently selected for writes.**
+- Every identifier `AzureBlobStorage.save_source()` returns is prefixed: `azblob:<key>` (e.g.
+  `azblob:Sources/<property>/<category>/<uuid>_<filename>`). A local path never starts with `azblob:`,
+  so the two are unambiguous by construction — no metadata lookup needed to tell them apart.
+- Add two module-level functions in `document_storage.py`, independent of `get_document_storage()`:
+  `read_source_document(identifier: str) -> bytes` and `source_document_exists(identifier: str) ->
+  bool`. Each checks the `azblob:` prefix: if present, strip it and read/check via a lazily-constructed
+  Blob client (built from `LUCIDPM_BLOB_CONNECTION_STRING`/`LUCIDPM_BLOB_CONTAINER`, independent of
+  `LUCIDPM_STORAGE_BACKEND`'s value); if absent, treat it as a local path (`os.path.isfile`/`open`).
+  All source/section read call sites (the two gate checks, the two merge-time reads, `page_count()`)
+  go through these, not through `get_document_storage().read()/.exists()`.
+- **`get_document_storage()` / `LUCIDPM_STORAGE_BACKEND` still decides where *new* writes go** — that
+  part of the existing design is unchanged and correct. Only the read side becomes identifier-agnostic.
+  This means a local machine needs `LUCIDPM_BLOB_CONNECTION_STRING` set (already true today — the
+  account-key connection string has been sitting in the local, gitignored `.env` since Cycle 4.1)
+  **regardless of `LUCIDPM_STORAGE_BACKEND`'s value**, if it's going to open any Blob-backed
+  source/section row. If an `azblob:`-prefixed identifier is encountered and the connection string
+  isn't set, raise a clear `RuntimeError` naming the missing variable — not a generic exception.
+- **Explicitly not retrofitted onto the existing generated-package path** (`get_document_storage()`'s
+  `azure_blob` branch, `AzureBlobStorage.save()`/its un-prefixed `Generated/...` keys) — that's
+  deployed and working, Do Not Touch. The `azblob:` prefix convention is new, scoped to `save_source()`
+  identifiers only.
+- `TenantCRM` (Prod) is untouched by this handoff, so its local dev experience doesn't change at all.
 
 **No Prod (`TenantCRM`) analysis done here** — this handoff's data-migration counts and verification
 are Test-only. Prod migration is explicitly deferred (see Do Not Touch).
@@ -187,15 +212,24 @@ are Test-only. Prod migration is explicitly deferred (see Do Not Touch).
 2. Rewire the three write functions (`save_uploaded_pdf`, `copy_existing_pdf`, `split_pdf_pages`) to
    go through the new storage method instead of raw `open()`/`shutil.copyfile`. At each of the three
    `lease_documents.py` call sites, branch the `RelativePath`/`StorageRoot` write per the rule above
-   (local: byte-identical `relative_to_root()`; blob: `NULL` / `"azure_blob"` sentinel).
-3. Rewire `page_count()` and the two generation-time gate checks (`1486`, `1742`) plus the two
-   merge-time reads (`1573`, `~2260`) to use `storage.exists()` / `storage.read()` instead of
-   `os.path.isfile()` / raw `PdfReader(path)`. `PdfReader` accepts a file-like object
-   (`io.BytesIO(storage.read(identifier))`) exactly like H66's `merge_pdf_files()` already
-   demonstrates for the local-vs-blob-agnostic read pattern.
-4. Validate locally exactly like H66's checklist: both backends, byte-identical local default,
-   collision behavior unchanged for local, collision-safe for Blob, `import LucidPM.LucidPM` still
-   exits 0.
+   (local: byte-identical `relative_to_root()`; blob: container name / de-prefixed key).
+3. Add the `read_source_document(identifier) -> bytes` / `source_document_exists(identifier) -> bool`
+   resolver functions in `document_storage.py` (see "Local dev after Phase B" above for the full
+   design): dispatch on the `azblob:` prefix, lazily construct a Blob client from
+   `LUCIDPM_BLOB_CONNECTION_STRING`/`LUCIDPM_BLOB_CONTAINER` independent of `LUCIDPM_STORAGE_BACKEND`,
+   fall back to plain `os.path.isfile`/`open` for anything unprefixed. Clear `RuntimeError` (naming the
+   missing env var) if an `azblob:` identifier shows up with no connection string configured.
+4. Rewire `page_count()` and the two generation-time gate checks (`1486`, `1742`) plus the two
+   merge-time reads (`1573`, `~2260`) to go through `source_document_exists()` / `read_source_document()`
+   instead of `os.path.isfile()` / raw `PdfReader(path)`. `PdfReader` accepts a file-like object
+   (`io.BytesIO(read_source_document(identifier))`) — same technique H66's `merge_pdf_files()` already
+   uses for its own (Protocol-based) local-vs-blob-agnostic read.
+5. Validate locally exactly like H66's checklist, plus the resolver specifically: both backends work
+   for writes, byte-identical local default, collision behavior unchanged for local, collision-safe for
+   Blob; **with `LUCIDPM_STORAGE_BACKEND=local` active, an `azblob:`-prefixed identifier still reads
+   correctly** (proves the resolver isn't just following the write backend); removing
+   `LUCIDPM_BLOB_CONNECTION_STRING` and pointing at an `azblob:` identifier raises the clear
+   `RuntimeError`, not a stack trace; `import LucidPM.LucidPM` still exits 0.
 
 **Commit Phase A on its own**, verified working with both backends against fresh/test data — before
 touching any real `TenantCRM_Test` row.
@@ -213,21 +247,29 @@ touching any real `TenantCRM_Test` row.
    assume the ~16-row stale-path figure from the standing backlog item is the *total* row count that
    needs migrating; it's only the subset with the *old* root. Every row with a valid local path today
    still needs migrating to Blob — it just isn't blocked on the junction/bulk-update fix first.
-2. Write a one-time migration script (`db/data_updates/` or a scratch script, Mark's call which):
-   for each row with a non-null `StoredFilePath` that resolves to a real local file, read its bytes,
-   compute a content hash (e.g. `sha256`), call the Phase A storage method to persist it to Blob, and
-   `UPDATE` the row's `StoredFilePath`/`RelativePath`/`StorageRoot` per the Phase A write rule (Blob
-   sentinel + `NULL`). **Do not delete the local files** — leave them in place as a fallback until
-   Phase B is verified, matching this project's existing "archive, don't delete" discipline (`_vN`
-   files, the H63 Fernet rotation keeping old keys until verified).
-3. **Write a migration manifest as the script runs** (CSV or JSON, committed alongside the script or
-   kept as a durable artifact — Mark's call which): one row per migrated document with table, row ID,
-   old `StoredFilePath`, new Blob key, content hash, and status (migrated / skipped / failed). Blob
-   writes and the SQL `UPDATE` can't share one transaction, so this manifest is what makes the
-   migration auditable and reversible — generate the rollback as a plain SQL script from the manifest
-   (`UPDATE ... SET StoredFilePath = <old>, RelativePath = <old>, StorageRoot = <old> WHERE ID = <row
-   ID>`) rather than trying to reconstruct it after the fact. Local files are untouched regardless, so
-   rollback only ever needs to restore DB state.
+2. Write a one-time migration script (`db/data_updates/` or a scratch script, Mark's call which). For
+   each row with a non-null `StoredFilePath` that resolves to a real local file, **per row, in this
+   order**:
+   1. Read its bytes and compute a content hash (`sha256`).
+   2. Call the Phase A Blob `save_source()` to persist it, getting back the `azblob:`-prefixed
+      identifier.
+   3. **Append that row's manifest entry (table, row ID, old `StoredFilePath`, new identifier, hash,
+      status) before issuing the row's SQL `UPDATE`** — the manifest must reflect exactly what's been
+      migrated at every point, including if the script is interrupted mid-run; writing it after the
+      fact risks a manifest that doesn't match reality on a crash.
+   4. `UPDATE` the row's `StoredFilePath` (to the new `azblob:` identifier), `RelativePath` (the
+      de-prefixed key), and `StorageRoot` (the container name) per the Phase A write rule.
+   **Do not delete the local files** — leave them in place as a fallback until Phase B is verified,
+   matching this project's existing "archive, don't delete" discipline (`_vN` files, the H63 Fernet
+   rotation keeping old keys until verified).
+3. **The manifest is a hard prerequisite for step 2, not an afterthought** (CSV or JSON, committed
+   alongside the script or kept as a durable artifact — Mark's call which): one entry per document with
+   table, row ID, old `StoredFilePath`, new Blob identifier, content hash, and status (migrated /
+   skipped / failed). Blob writes and the SQL `UPDATE` can't share one transaction, so this manifest is
+   what makes the migration auditable and reversible — generate the rollback as a plain SQL script from
+   the manifest (`UPDATE ... SET StoredFilePath = <old>, RelativePath = <old>, StorageRoot = <old>
+   WHERE ID = <row ID>`) rather than trying to reconstruct it after the fact. Local files are untouched
+   regardless, so rollback only ever needs to restore DB state.
 4. **Dry-run first**: log what *would* migrate (row ID, old path, new key) without executing any
    `UPDATE` or Blob write, and review the list before running it for real.
 5. After migration, spot-check a sample: download the Blob-stored version of a few rows and diff
@@ -274,13 +316,22 @@ touching any real `TenantCRM_Test` row.
       local default (same rigor as H66 — verify the *exact* local path, not just "no error").
 - [ ] `split_pdf_pages`'s collision behavior is preserved locally (counter-suffix on a real collision)
       and is collision-safe on Blob (no overwrite, unique key per split).
+- [ ] With `LUCIDPM_STORAGE_BACKEND=local` active, an `azblob:`-prefixed identifier still reads
+      correctly through `read_source_document()`/`source_document_exists()` (proves the resolver
+      dispatches on the identifier, not the active write backend).
+- [ ] Removing `LUCIDPM_BLOB_CONNECTION_STRING` and resolving an `azblob:` identifier raises the clear
+      `RuntimeError`, not a stack trace.
+- [ ] `RelativePath`/`StorageRoot` are meaningful for both backends (local: unchanged; Blob: container
+      name + de-prefixed key), not `NULL`.
 - [ ] `import LucidPM.LucidPM` exits 0.
 
 **Phase B:**
 - [ ] Stale-path prerequisite confirmed resolved before running.
 - [ ] Real row counts captured (Step 1's queries) before migrating.
-- [ ] Migration manifest (row ID, old path, new key, content hash, status) produced and reviewed;
-      rollback SQL generated from it.
+- [ ] Migration manifest entry written **before** each row's SQL `UPDATE`, not after the batch —
+      confirm by checking the manifest reflects partial progress if the script is interrupted early.
+- [ ] Rollback SQL generated from the manifest and reviewed (not executed, unless a rollback is
+      actually needed).
 - [ ] Dry run reviewed before the real run.
 - [ ] Sample of migrated files verified byte-identical to their local originals (hash match).
 - [ ] Local files still present after migration (not deleted).
