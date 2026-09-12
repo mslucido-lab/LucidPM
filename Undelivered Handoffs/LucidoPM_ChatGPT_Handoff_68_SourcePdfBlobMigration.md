@@ -25,8 +25,9 @@ different call sites:
 - H66/H67: `LeaseGeneratedDocuments.StoredFilePath`, written by `merge_pdf_files()` +
   `save_generated_package()`, read by `/api/lease-generated-pdf`.
 - This handoff: `LeaseSourceDocuments.StoredFilePath` / `LeaseDocumentSections.StoredFilePath`,
-  written by `save_uploaded_pdf()` / `copy_existing_pdf()` / `split_pdf_pages()`, read at package-
-  generation time and by the admin Library's PDF viewer/preview.
+  written by `save_uploaded_pdf()` / `copy_existing_pdf()` / `split_pdf_pages()`, read only at
+  package-generation time (pre-flight check + merge). There is no separate source-PDF preview/view
+  route to worry about — confirmed by grep, see Current State.
 
 **Two phases, two commits — do not collapse them:**
 - **Phase A** — extend `DocumentStorage` usage to source/section documents (code only, local-behavior-
@@ -71,27 +72,62 @@ merge-time reads** are at `1573` (`pdf_paths_to_merge.append(p.file_path)`, firs
 `~2260` area (regeneration) — both currently pass a raw local path straight into `PdfReader()`
 downstream inside `merge_pdf_files()`.
 
-**The write side**, all in `LucidPM/pages/lease_documents_pdf.py`, all raw local filesystem I/O today:
-- `save_uploaded_pdf()` (~170-186) — new source-PDF uploads, `open(target, "wb")`.
-- `copy_existing_pdf()` (~190-207) — duplicating an existing template's file, `shutil.copyfile`.
-- `split_pdf_pages()` (~214+) — writes split section PDFs, `open(target, "wb")`, same shape as the
-  original (pre-H66) `merge_pdf_files()`.
+**The write side**, all in `LucidPM/pages/lease_documents_pdf.py`, all raw local filesystem I/O today
+— and **not uniform**, confirmed by reading each function's actual current body:
+- `save_uploaded_pdf()` (~170-186) and `copy_existing_pdf()` (~190-207) already build a
+  **timestamp-suffixed unique filename** themselves (`f"{prefix}_{slugify(stem)}_{stamp}{ext}"`)
+  before writing — collisions are already avoided by construction, no counter-loop.
+- `split_pdf_pages()` (215-250), verified directly: uses the **exact same counter-suffix retry loop**
+  (`while os.path.exists(target): target = f"{stem}_{counter}{ext}"`) the *original, pre-H66*
+  `merge_pdf_files()` used — the identical shape H66's Phase A/round-3 had to fix, because a
+  counter-based "does this exist yet" check is fine for local disk but unsafe/awkward for Blob.
 - `page_count()` (~209-211) — reads via `PdfReader(path)`, called both at generation-validation time
   and right after a split/upload to confirm the result.
+- **No dedicated route serves source PDFs for preview/download** — confirmed by grepping
+  `LucidPM.py`'s `@api.get` routes; the only PDF-serving routes are for generated packages and
+  reports. Source documents are read only internally (validation checks + merge-time), never served
+  standalone. (An earlier draft of this handoff asked Codex to "find and fix the admin Library's PDF
+  preview path" — there isn't one; that instruction is removed below.)
 - Path helpers already in this file, admin-configurable via `LeaseDocumentStorageRoot`:
   `template_folder()`, `sections_folder()`, `normalize_storage_root()`, `ensure_folder()` — these stay
-  exactly as they are for the **local** backend, same reasoning H66 landed on after 3 rounds: don't
-  reroute local's existing convention through a shared abstraction that forces a different shape.
+  exactly as they are for the **local** backend, same reasoning H66 landed on: don't reroute local's
+  existing convention through a shared abstraction that forces a different shape.
+- `import_local_pdf_for_testing()` (`lease_documents.py:1279`, dev-tool only, gated by
+  `developer_tools_enabled`) also calls `copy_existing_pdf()` — covered automatically by fixing that
+  function, no separate treatment needed.
 
 **`DocumentStorage` already exists** (`LucidPM/document_storage.py`, Handoff 66/`cbf2038`) — `save`,
-`read`, `exists`, two implementations. This handoff reuses the interface and the
-`LUCIDPM_STORAGE_BACKEND` switch; it does **not** redesign it. The one interface question this
-surfaces: H66's `save(lease_id, filename, data)` signature is generated-package-specific (keyed by
-lease). Source/section documents are keyed by **property + document category** (`template_folder()`'s
-existing convention) or by **source document ID** (for splits) — not by lease at all. Phase A needs a
-`save(scope_key: str, filename: str, data: bytes)`-shaped call (or a second, source-specific method on
-the same class) rather than reusing the lease-specific one as-is. Design this explicitly in Phase A,
-don't bolt source documents onto the generated-package method's signature.
+`read`, `exists`, two implementations, `save(lease_id, filename, data)`. This handoff extends the
+interface rather than redesigning it, and mirrors H66's own final lesson precisely: **each backend
+owns its collision strategy; the interface passes semantic parameters, never a pre-built path/key.**
+Add a second method:
+```python
+class DocumentStorage(Protocol):
+    def save(self, lease_id: int, filename: str, data: bytes) -> str: ...   # existing (H66)
+
+    def save_source(self, property_name: str, document_category: str, filename: str, data: bytes) -> str:
+        """Persist a source/section document. Each implementation decides its own
+        collision handling — see the two call-site behaviors below, which differ
+        from each other and must be preserved exactly."""
+
+    def read(self, identifier: str) -> bytes: ...   # existing, identifier-agnostic, no change
+    def exists(self, identifier: str) -> bool: ...  # existing, identifier-agnostic, no change
+```
+- `LocalFilesystemStorage.save_source()`: writes under `template_folder(property, category)` (or
+  `sections_folder(...)` for splits — the caller picks which root to construct and passes it as part
+  of `filename`'s path, or `save_source` takes an explicit `subfolder` param; decide the exact shape
+  during implementation, but the *outcome* must be identical). For callers that already pass a
+  timestamp-unique filename (`save_uploaded_pdf`, `copy_existing_pdf`), just write it — no extra
+  logic needed. For `split_pdf_pages`, **port its exact counter-suffix loop into this method** (the
+  same fix H66 gave `merge_pdf_files`/`LocalFilesystemStorage.save`) — don't leave the loop in
+  `split_pdf_pages` itself calling a "does this exist" check against a storage abstraction that may
+  not cheaply support that for Blob.
+- `AzureBlobStorage.save_source()`: build its own collision-safe key for **all three** callers
+  uniformly (e.g. `Sources/<property>/<category>/<uuid>_<filename>`, or
+  `Sources/<property>/<category>/Sections/<uuid>_<filename>` for splits) — `overwrite=False`, full
+  `uuid.uuid4().hex`, same reasoning as `AzureBlobStorage.save()` in H66. Don't try to reproduce the
+  timestamp-suffix or counter-loop conventions for Blob; they're solving a local-disk problem that
+  doesn't apply the same way to Blob's namespace.
 
 **No Prod (`TenantCRM`) analysis done here** — this handoff's data-migration counts and verification
 are Test-only. Prod migration is explicitly deferred (see Do Not Touch).
@@ -117,11 +153,7 @@ are Test-only. Prod migration is explicitly deferred (see Do Not Touch).
    `os.path.isfile()` / raw `PdfReader(path)`. `PdfReader` accepts a file-like object
    (`io.BytesIO(storage.read(identifier))`) exactly like H66's `merge_pdf_files()` already
    demonstrates for the local-vs-blob-agnostic read pattern.
-4. Find and fix the admin Library's PDF preview/view path too (search `lease_documents.py` for
-   wherever a source PDF gets opened for display, not just generation) — an unmigrated preview button
-   is a smaller, quieter version of the same bug and easy to miss if this handoff only chases the
-   generation error message.
-5. Validate locally exactly like H66's checklist: both backends, byte-identical local default,
+4. Validate locally exactly like H66's checklist: both backends, byte-identical local default,
    collision behavior unchanged for local, collision-safe for Blob, `import LucidPM.LucidPM` still
    exits 0.
 
@@ -181,7 +213,8 @@ touching any real `TenantCRM_Test` row.
 **Phase A:**
 - [ ] Both backends work locally for upload, copy, split, and generation-time read, byte-identical
       local default (same rigor as H66 — verify the *exact* local path, not just "no error").
-- [ ] The admin Library's PDF preview/view path also goes through the storage abstraction (Step 4).
+- [ ] `split_pdf_pages`'s collision behavior is preserved locally (counter-suffix on a real collision)
+      and is collision-safe on Blob (no overwrite, unique key per split).
 - [ ] `import LucidPM.LucidPM` exits 0.
 
 **Phase B:**
@@ -206,7 +239,6 @@ c:\Inspirion\Dev\TenantCRM\LucidPM\
   LucidPM\pages\lease_documents_pdf.py        ← Phase A (save_uploaded_pdf, copy_existing_pdf,
                                                   split_pdf_pages, page_count)
   LucidPM\pages\lease_package_builder.py      ← Phase A (lines ~1486, ~1573, ~1742, ~2260 area)
-  LucidPM\pages\lease_documents.py            ← Phase A (find + fix the PDF preview/view path)
   db\data_updates\  (or a scratch script)      ← Phase B, one-time migration script — Test DB only
 ```
 
