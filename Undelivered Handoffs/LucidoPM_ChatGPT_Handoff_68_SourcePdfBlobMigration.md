@@ -128,6 +128,44 @@ class DocumentStorage(Protocol):
   `uuid.uuid4().hex`, same reasoning as `AzureBlobStorage.save()` in H66. Don't try to reproduce the
   timestamp-suffix or counter-loop conventions for Blob; they're solving a local-disk problem that
   doesn't apply the same way to Blob's namespace.
+- **`StorageRoot`/`RelativePath` at write time** (see Current State for why these are display-only,
+  not read-path-critical): the three call sites in `lease_documents.py` that currently compute
+  `rel = relative_to_root(stored_path, root)` need a backend branch. For the local backend, keep this
+  byte-identical. For the Blob backend, **skip `relative_to_root()` entirely** (it's meaningless
+  against a Blob key) — store `RelativePath = NULL` and set `StorageRoot` to a fixed sentinel (e.g.
+  `"azure_blob"`) instead of the local root string, so a human looking at the row can tell which
+  backend it belongs to without cross-referencing `LUCIDPM_STORAGE_BACKEND`.
+
+**`StorageRoot`/`RelativePath` are display-only, not load-bearing for reads** — confirmed by reading
+every call site. `lease_documents.py` computes `rel = relative_to_root(stored_path, root)` at write
+time and stores it alongside `StorageRoot`, but the only place either column is read back is
+`_load_source_documents()` (`lease_documents.py:1013`): `saved_path=str(r.get("RelativePath") or
+r.get("StoredFilePath") or "")`, used purely to render a friendlier path in the admin list. No code
+path reconstructs a file location from `StorageRoot + RelativePath` — every actual read/exists/gate
+check uses `StoredFilePath` directly. This matters because `relative_to_root()` calls
+`os.path.relpath()` against a local root, which produces a meaningless value if handed a Blob key —
+but since nothing consumes that value functionally, it's a cosmetic gap (an ugly string in the admin
+list), not a generation-blocking one. Phase A still fixes it properly (see below) rather than leaving
+garbage in the column, but it does not need to block Phase A/B on a bigger redesign.
+
+**Local dev after Phase B — the backend must match how the target DB's rows were actually written,
+same rule that already exists for `LeaseGeneratedDocuments` post-Cycle-4.2.** `DocumentStorage` has no
+cross-backend dispatch — `LocalFilesystemStorage.read()` on a Blob key just fails, and vice versa
+(confirmed by reading `document_storage.py`: `get_document_storage()` picks one backend for the whole
+process from `LUCIDPM_STORAGE_BACKEND`, nothing inspects the identifier shape to route across
+backends). This is an existing, accepted property of the design — not new. Once Phase B rewrites
+`TenantCRM_Test`'s source/section rows to Blob keys, a local run against `TenantCRM_Test` with the
+default `LUCIDPM_STORAGE_BACKEND=local` will show "Missing PDF" for every migrated row, even though
+the original file is still sitting on disk (Do Not Touch forbids deleting it) — because the DB no
+longer points at it. **This is not a new class of problem**: Cycle 4.1's validation notes already
+established that local dev needs `LUCIDPM_STORAGE_BACKEND=azure_blob` (using the account-key
+connection string already in the local, gitignored `.env`) to see Blob-backed rows, for generated
+packages. Phase A doesn't change that contract, it just extends which document types follow it. No
+new resolver/dual-backend logic — document the requirement, don't build around it: **after Phase B,
+local work against `TenantCRM_Test` needs `LUCIDPM_STORAGE_BACKEND=azure_blob` set** (same `.env`
+credential already proven working); local work against local SQL Server Express / local files is
+unaffected (`LUCIDPM_STORAGE_BACKEND=local`, the default, stays correct for that). `TenantCRM` (Prod)
+is untouched by this handoff, so its local dev experience doesn't change at all.
 
 **No Prod (`TenantCRM`) analysis done here** — this handoff's data-migration counts and verification
 are Test-only. Prod migration is explicitly deferred (see Do Not Touch).
@@ -147,7 +185,9 @@ are Test-only. Prod migration is explicitly deferred (see Do Not Touch).
    collision-safe key scheme (e.g. `Sources/<property>/<category>/<uuid>_<filename>`), independent of
    the local path shape.
 2. Rewire the three write functions (`save_uploaded_pdf`, `copy_existing_pdf`, `split_pdf_pages`) to
-   go through the new storage method instead of raw `open()`/`shutil.copyfile`.
+   go through the new storage method instead of raw `open()`/`shutil.copyfile`. At each of the three
+   `lease_documents.py` call sites, branch the `RelativePath`/`StorageRoot` write per the rule above
+   (local: byte-identical `relative_to_root()`; blob: `NULL` / `"azure_blob"` sentinel).
 3. Rewire `page_count()` and the two generation-time gate checks (`1486`, `1742`) plus the two
    merge-time reads (`1573`, `~2260`) to use `storage.exists()` / `storage.read()` instead of
    `os.path.isfile()` / raw `PdfReader(path)`. `PdfReader` accepts a file-like object
@@ -175,16 +215,32 @@ touching any real `TenantCRM_Test` row.
    still needs migrating to Blob — it just isn't blocked on the junction/bulk-update fix first.
 2. Write a one-time migration script (`db/data_updates/` or a scratch script, Mark's call which):
    for each row with a non-null `StoredFilePath` that resolves to a real local file, read its bytes,
-   call the Phase A storage method to persist it to Blob, and `UPDATE` the row's `StoredFilePath` to
-   the returned Blob identifier. **Do not delete the local files** — leave them in place as a fallback
-   until Phase B is verified, matching this project's existing "archive, don't delete" discipline
-   (`_vN` files, the H63 Fernet rotation keeping old keys until verified).
-3. **Dry-run first**: log what *would* migrate (row ID, old path, new key) without executing any
-   `UPDATE`, and review the list before running it for real.
-4. After migration, spot-check a sample: download the Blob-stored version of a few rows and diff
-   against the original local file, byte-for-byte — same verification discipline as Cycle 2.1's
-   "row counts + FK/CHECK trust" checks, applied to file content instead of table rows.
-5. Re-run the exact failing scenario from the deployed container: generate Lease Package #2 (the one
+   compute a content hash (e.g. `sha256`), call the Phase A storage method to persist it to Blob, and
+   `UPDATE` the row's `StoredFilePath`/`RelativePath`/`StorageRoot` per the Phase A write rule (Blob
+   sentinel + `NULL`). **Do not delete the local files** — leave them in place as a fallback until
+   Phase B is verified, matching this project's existing "archive, don't delete" discipline (`_vN`
+   files, the H63 Fernet rotation keeping old keys until verified).
+3. **Write a migration manifest as the script runs** (CSV or JSON, committed alongside the script or
+   kept as a durable artifact — Mark's call which): one row per migrated document with table, row ID,
+   old `StoredFilePath`, new Blob key, content hash, and status (migrated / skipped / failed). Blob
+   writes and the SQL `UPDATE` can't share one transaction, so this manifest is what makes the
+   migration auditable and reversible — generate the rollback as a plain SQL script from the manifest
+   (`UPDATE ... SET StoredFilePath = <old>, RelativePath = <old>, StorageRoot = <old> WHERE ID = <row
+   ID>`) rather than trying to reconstruct it after the fact. Local files are untouched regardless, so
+   rollback only ever needs to restore DB state.
+4. **Dry-run first**: log what *would* migrate (row ID, old path, new key) without executing any
+   `UPDATE` or Blob write, and review the list before running it for real.
+5. After migration, spot-check a sample: download the Blob-stored version of a few rows and diff
+   against the original local file, byte-for-byte (the manifest's content hash makes this a hash
+   comparison, not a full re-download-and-diff, for the full set) — same verification discipline as
+   Cycle 2.1's "row counts + FK/CHECK trust" checks, applied to file content instead of table rows.
+6. **Deploy Phase A's code to the live container** — reusing the existing `lucidpm` app, no new
+   resources: `[Mark]` build and push a new image tag (e.g. `ghcr.io/mslucido-lab/lucidpm:0.3.0`) from
+   a checkout including Phase A's commit; `[Claude via az]` `az containerapp update -n lucidpm -g
+   Lucido-Apps-RG --image ghcr.io/mslucido-lab/lucidpm:0.3.0`, wait for the new revision to reach
+   `Healthy`; `[Mark verifies]` app loads normally, existing generated-package flow (H66/H67, untouched
+   by this handoff) still works.
+7. Re-run the exact failing scenario from the deployed container: generate Lease Package #2 (the one
    with the "General Lease" PDF-backed section) again, against `TenantCRM_Test`, and confirm it now
    succeeds.
 
@@ -202,9 +258,12 @@ touching any real `TenantCRM_Test` row.
 - **The admin "storage root" screen redesign.** The roadmap flags retiring/repurposing it as a
   separate, larger UX decision (Cycle 5.1's own note) — this handoff makes the *storage* correct
   underneath it, not the admin UI's shape.
-- **Any Container App redeploy or Gate-4-adjacent infra work.** This is application code + a data
-  migration; it doesn't need a new image build until Phase A is ready to actually run in the
-  container, which is a natural follow-on step, not part of Phase A/B themselves.
+- **Any new Container Apps infrastructure** — new environment, new secrets scheme, ingress/scaling
+  changes, new resources. Phase B's final validation step (below) does require pushing a new image tag
+  to the existing `lucidpm` app and updating it in place, exactly the plain image-update pattern H65/
+  H67 already established — that is in scope, it's *new infra* that isn't. (An earlier draft of this
+  handoff excluded any redeploy at all, which directly contradicted the "Done when" criterion below —
+  corrected here.)
 
 ---
 
@@ -220,9 +279,13 @@ touching any real `TenantCRM_Test` row.
 **Phase B:**
 - [ ] Stale-path prerequisite confirmed resolved before running.
 - [ ] Real row counts captured (Step 1's queries) before migrating.
+- [ ] Migration manifest (row ID, old path, new key, content hash, status) produced and reviewed;
+      rollback SQL generated from it.
 - [ ] Dry run reviewed before the real run.
-- [ ] Sample of migrated files verified byte-identical to their local originals.
+- [ ] Sample of migrated files verified byte-identical to their local originals (hash match).
 - [ ] Local files still present after migration (not deleted).
+- [ ] New image built, pushed, and deployed to the existing `lucidpm` app; revision reaches `Healthy`;
+      existing H66/H67 generated-package flow still works post-deploy.
 - [ ] **Lease Package #2 (the originally-failing case) now generates successfully against
       `TenantCRM_Test` from the deployed container.**
 
