@@ -20,8 +20,8 @@ local production setup until the cloud version is proven.
 | 0 — Code prep | App is deploy-ready; no Windows-only assumptions; config is env-driven | 4–5 | **✅ Gate 0 PASSED 2026-09-09** |
 | 1 — Azure foundation | Subscription, resource group, SQL server, free DB confirmed at ~$0 | 2 | **G1: free tier real?** |
 | 2 — App vs Azure SQL | LucidPM runs locally against Azure SQL, core workflows validated | 2–3 | **✅ G2 PASSED 2026-09-10** |
-| 3 — Containerize + deploy | LucidPM live on a temp `*.azurecontainerapps.io` URL, scaling to zero | 3–5 | **G3: Reflex in a container?** |
-| 4 — Blob storage | One lease PDF survives a container restart — **POC COMPLETE** | 2 | **G4: commit to production?** |
+| 3 — Containerize + deploy | LucidPM live on a temp `*.azurecontainerapps.io` URL, scaling to zero | 3–5 | **✅ Gate 3 PASSED 2026-09-11** |
+| 4 — Blob storage | One lease PDF survives a container restart — **POC COMPLETE** | 2 | **✅ Gate 4 PASSED 2026-09-11 (scoped test — see note)** |
 | 5 — LucidPM production | Real data migrated, auth, custom subdomain, cutover | 6–8 | — |
 | 6 — Portfolio Manager | Second Container App, cross-DB refactor, its own subdomain | 8–12 (soft) | — |
 
@@ -36,6 +36,23 @@ everything ≈ 6–12 months.
 
 ## Progress log
 
+- **2026-09-11 — Cycle 4.2 deployed; GATE 4 PASSED (scoped) — Handoff 68 written for a new finding.**
+  H67's changes deployed successfully: Container App revision `0000002` healthy, running
+  `ghcr.io/mslucido-lab/lucidpm:0.2.0`, Blob storage enabled for generated packages. A text-only lease
+  package generates and downloads correctly through the live app. **Gate 4 is recorded PASSED for the
+  specific test it and H67 both defined** — a generated (text-only) lease PDF via Blob storage — not
+  reopened by the finding below; confirm Step 5's scale-to-zero-and-retrieve-again proof specifically
+  if it wasn't already run as part of this. **New finding, not a Gate 4 regression:** generating a
+  package that includes a *PDF-backed* section (e.g. Lease Package #2 / "General Lease") fails with
+  "Missing PDF files for these PDF-only sections" — `LeaseSourceDocuments`/`LeaseDocumentSections`
+  still store Windows local filesystem paths, which a Container App replica has no access to at all
+  (not the stale-path bug specifically — structural, affects every PDF-backed section regardless of
+  path validity). H66/H67 explicitly scoped this out (Do Not Touch: "Cycle 5.1's job, not this one's")
+  — it's the roadmap's own already-anticipated Cycle 5.1 work, arriving via POC testing earlier than
+  planned. **Handoff 68 written** to extend the storage abstraction to source/section documents and
+  migrate `TenantCRM_Test`'s existing files — two phases (code, then data migration), Test DB only,
+  gated on the standing TOP-PRIORITY stale-path cleanup landing first. Prod migration and the admin
+  storage-root UI redesign remain separately tracked, not part of H68.
 - **2026-09-11 — Handoff 67 written** (`Undelivered Handoffs/LucidoPM_ChatGPT_Handoff_67_BlobStorageDeploy.md`,
   not started). Cycle 4.2 / **Gate 4** — deploy Cycle 4.1's storage abstraction to the live `lucidpm`
   Container App and prove a generated lease PDF survives a scale-to-zero restart, closing the POC.
