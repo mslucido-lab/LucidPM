@@ -2,6 +2,7 @@
 *Auto-populate `dbo.SchemaChangeLog` via a DDL trigger, so future schema changes stop depending on
 someone remembering to log them by hand — the way 24 of them already went unlogged*
 *Prepared: 2026-09-12*
+*Completed: 2026-09-12 - deployed to local and Azure `TenantCRM` / `TenantCRM_Test`; Azure Test and Prod definitions have matching SHA-256 hashes. See `docs/h70-validation.md`.*
 *Standing backlog item, no Azure dependency. LOW risk to the app (touches no application code, no
 table the app reads/writes), MEDIUM risk to get exactly right on the first try (a badly-written DDL
 trigger can block every future schema change if it isn't defensive about its own failure modes — see
