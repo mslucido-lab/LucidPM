@@ -182,6 +182,24 @@ deliberate — see "Local dev after Phase B" above for why.
   `split_pdf_pages`'s current behavior exactly — same fix H66 gave `merge_pdf_files`/
   `LocalFilesystemStorage.save`, ported here instead of left in `split_pdf_pages` itself, since a
   "does this exist" check belongs with whichever backend actually owns collision detection).
+- **`save_source()` needs its own root factory — it cannot reuse `get_document_storage()`.** Verified
+  directly: `get_document_storage()` (`document_storage.py:81-96`) constructs
+  `LocalFilesystemStorage(generated_folder(storage_root or DEFAULT_DOCUMENT_ROOT))` — its `self._root`
+  is already `<root>\Generated`. `template_folder(root, property, category)` treats whatever `root` it's
+  given as the *bare* document root and appends `Admin\<property>\<category>` itself. Calling
+  `save_source()` on an instance built by `get_document_storage()` would resolve to
+  `<root>\Generated\Admin\...` — a doubled, wrong path, not what today's uploads/splits produce
+  (`<root>\Admin\...`). **Do not fix this by stripping `"Generated"` back off `self._root`** — add a
+  separate factory instead: `get_source_document_storage(storage_root: str | None = None) ->
+  DocumentStorage` in `document_storage.py`, parallel to `get_document_storage()`, that for the local
+  backend constructs `LocalFilesystemStorage(normalize_storage_root(storage_root or
+  DEFAULT_DOCUMENT_ROOT))` — the bare root, no `generated_folder()` call — and for the Blob backend
+  returns the same lazily-constructed `AzureBlobStorage` singleton `get_document_storage()` already
+  uses (Blob has no such doubling problem — `kind` already picks the full key segment, `Generated/...`
+  vs `Sources/...`, independently). Every Phase A write call site uses
+  `get_source_document_storage(storage_root).save_source(...)`, never `get_document_storage()`.
+  `get_document_storage()` itself is completely unchanged — this is a new sibling function, not a
+  modification (see Do Not Touch).
 - `AzureBlobStorage.save_source()`: `kind` picks the key segment —
   `Sources/<property>/<category>/<uuid>_<filename>` for `kind="template"`,
   `Sources/<property>/<category>/Sections/<uuid>_<filename>` for `kind="section"` — `overwrite=False`,
@@ -267,9 +285,11 @@ are Test-only. Prod migration is explicitly deferred (see Do Not Touch).
    collision-safe key scheme (e.g. `Sources/<property>/<category>/<uuid>_<filename>`), independent of
    the local path shape.
 2. Rewire the three write functions (`save_uploaded_pdf`, `copy_existing_pdf`, `split_pdf_pages`) to
-   go through the new storage method instead of raw `open()`/`shutil.copyfile`. At each of the three
-   `lease_documents.py` call sites, branch the `RelativePath`/`StorageRoot` write per the rule above
-   (local: byte-identical `relative_to_root()`; blob: container name / de-prefixed key).
+   go through `get_source_document_storage(storage_root).save_source(...)` instead of raw
+   `open()`/`shutil.copyfile` — **not** `get_document_storage()`, which is rooted at `Generated\` and
+   would double the path (see the new-factory note above). At each of the three `lease_documents.py`
+   call sites, branch the `RelativePath`/`StorageRoot` write per the rule above (local: byte-identical
+   `relative_to_root()`; blob: container name / de-prefixed key).
 3. Add the `read_source_document(identifier) -> bytes` / `source_document_exists(identifier) -> bool`
    resolver functions in `document_storage.py` (see "Local dev after Phase B" above for the full
    design): dispatch on the `azblob:` prefix, lazily construct a Blob client from
@@ -332,13 +352,24 @@ touching any real `TenantCRM_Test` row.
    `LUCIDPM_BLOB_CONTAINER` directly and fail fast if either is missing — don't fall back to anything.
    For each row (both `LeaseSourceDocuments` and `LeaseDocumentSections`) with a non-null
    `StoredFilePath` that resolves to a real local file, **per row, in this order**:
-   1. For a `LeaseDocumentSections` row, resolve `property_name`/`document_category` by joining
-      `LeaseSourceDocumentID -> LeaseSourceDocuments.LeaseSourceDocumentID` (`PropertyID`,
-      `DocumentCategory`). **`LeaseSourceDocumentID` is nullable** (confirmed in the schema, see
-      Current State) — for a row where it's `NULL` or doesn't resolve to a live source row, use a fixed
-      fallback bucket (e.g. `property_name="Unlinked"`, `document_category="Legacy"`) so the key is
-      still well-formed; record which rows hit the fallback in the manifest (an extra `fallback_used`
-      column) so they're easy to find and re-categorize by hand later if it matters.
+   1. Resolve `property_name`/`document_category`. Both tables only carry a `PropertyID` (integer FK)
+      — the Blob key needs the **name** (`Properties.PropertyName`), the same way the live admin UI
+      already does it (`_property_name_for_id()`, `lease_documents.py`; `Properties(PropertyID,
+      PropertyName)` confirmed directly). So the migration query needs a real join, not just the FK
+      chase:
+      - `LeaseSourceDocuments` row: `JOIN Properties ON Properties.PropertyID =
+        LeaseSourceDocuments.PropertyID` for `PropertyName`; `DocumentCategory` is already a column on
+        the row itself, no join needed for that half.
+      - `LeaseDocumentSections` row: `LEFT JOIN LeaseSourceDocuments ON LeaseSourceDocuments.
+        LeaseSourceDocumentID = LeaseDocumentSections.LeaseSourceDocumentID`, then the same `JOIN
+        Properties` off *that* row's `PropertyID`, for both `PropertyName` and `DocumentCategory` —
+        confirmed `LeaseDocumentSections` has neither column itself (see Current State).
+      **Use the fixed fallback bucket (`property_name="Unlinked"`, `document_category="Legacy"`)
+      whenever either join comes up empty** — `LeaseSourceDocumentID` is `NULL`/doesn't resolve to a
+      live source row, **or** the resolved `PropertyID` doesn't resolve to a live `Properties` row
+      (dangling FK) — not only the source-link case. Record `fallback_used = true` in the manifest
+      whenever either condition fires, so both kinds of orphaned rows are easy to find and
+      re-categorize by hand later if it matters.
    2. Read its bytes and compute a content hash (`sha256`).
    3. **Write the manifest entry with status `uploaded_pending_update`** — table, row ID, old
       `StoredFilePath`, old `RelativePath`, old `StorageRoot` (the full old triple, not just the path —
@@ -390,6 +421,8 @@ touching any real `TenantCRM_Test` row.
   already specifies for Cycle 5.1 ("migrate Test DB and verify before Prod").
 - **`save_generated_package()` and `/api/lease-generated-pdf`** (the `LeaseGeneratedDocuments` write
   and read paths from H66/H67) — already correct, already deployed, don't touch.
+- **`get_document_storage()` itself** — unchanged, including its `generated_folder()` rooting.
+  `get_source_document_storage()` is a new, separate function alongside it, not a modification.
 - **`merge_pdf_files()`'s external contract** — its signature (`section_paths: Iterable[str] ->
   (bytes, int)`) and its callers (`save_generated_package()`, the `LeaseGeneratedDocuments` INSERT)
   don't change. Its **internal read loop is in scope** (see The Fix, Phase A step 4) — that's a
@@ -429,6 +462,9 @@ touching any real `TenantCRM_Test` row.
       internal loop actually handles all three inputs in one merge, not just each in isolation.
 - [ ] `split_pdf_pages()` successfully splits a source document whose own `StoredFilePath` is
       `azblob:`-prefixed (not just a local one).
+- [ ] **A local upload/copy/split lands at `<root>\Admin\...` (no `Generated` segment) exactly as
+      before** — proves `get_source_document_storage()` is rooted correctly and Phase A didn't
+      accidentally route source writes through `get_document_storage()`'s `Generated\`-rooted instance.
 - [ ] `import LucidPM.LucidPM` exits 0.
 
 **Phase B:**
@@ -437,9 +473,11 @@ touching any real `TenantCRM_Test` row.
 - [ ] Migration script constructs its Blob writer explicitly and does not read
       `LUCIDPM_STORAGE_BACKEND` — confirmed by running it with that variable unset/`local` and checking
       no local files were written as a side effect.
-- [ ] `LeaseDocumentSections` rows resolve property/category via the `LeaseSourceDocumentID` join;
-      rows hitting the `NULL`/orphaned fallback are flagged `fallback_used` in the manifest and reviewed
-      by hand.
+- [ ] Both `LeaseSourceDocuments` and `LeaseDocumentSections` rows resolve `PropertyName` via the
+      `Properties` join (not just a `PropertyID` passthrough) and `LeaseDocumentSections` rows resolve
+      property/category via the `LeaseSourceDocumentID` join; rows hitting the fallback — missing
+      source link **or** dangling `PropertyID` — are flagged `fallback_used` in the manifest and
+      reviewed by hand.
 - [ ] Migration manifest entry written with status `uploaded_pending_update` **before** each row's Blob
       upload and SQL `UPDATE`, transitioned to `migrated` (or `failed`) after — confirm by checking the
       manifest reflects partial, in-progress state if the script is interrupted early, and that every
@@ -465,7 +503,9 @@ touching any real `TenantCRM_Test` row.
 
 ```
 c:\Inspirion\Dev\TenantCRM\LucidPM\
-  LucidPM\document_storage.py               ← Phase A, extend the interface
+  LucidPM\document_storage.py               ← Phase A, extend the interface + new
+                                                  get_source_document_storage() factory
+                                                  (get_document_storage() itself unchanged)
   LucidPM\pages\lease_documents_pdf.py        ← Phase A (save_uploaded_pdf, copy_existing_pdf,
                                                   split_pdf_pages incl. its own PdfReader(source_path)
                                                   read, page_count, merge_pdf_files' internal read loop)
