@@ -72,6 +72,35 @@ merge-time reads** are at `1573` (`pdf_paths_to_merge.append(p.file_path)`, firs
 `~2260` area (regeneration) — both currently pass a raw local path straight into `PdfReader()`
 downstream inside `merge_pdf_files()`.
 
+**The merge boundary itself is local-path-only today — verified directly, not just inferred.**
+`merge_pdf_files()` (`lease_documents_pdf.py:1174-1197`) takes `section_paths: Iterable[str]`, checks
+`os.path.isfile(p)` for each, then calls `PdfReader(path)` per section — there is no
+Blob-aware/file-like-object path in it at all yet. (An earlier revision of this handoff claimed
+`merge_pdf_files()` already demonstrates a local-vs-blob-agnostic read pattern "like H66's" — that was
+wrong; the only place `storage.read()` is actually called is the download route,
+`/api/lease-generated-pdf` (`LucidPM.py:819`), a completely different code path. Corrected here.)
+`pdf_paths_to_merge` (`lease_package_builder.py:1518`) mixes two origins into that same list: **local
+temp files** for rendered-text sections (`render_text_sections_to_pdf_file()` → ReportLab writes to a
+real path via `tempfile.NamedTemporaryFile`, deleted in a `finally` block after merge — this is
+ephemeral in-process rendering, not `LeaseSourceDocuments`/`LeaseDocumentSections` data, and stays
+local-only; H68 does not change it) and **PDF-backed section paths** (`p.file_path`, today always
+local, after Phase A potentially `azblob:`-prefixed). `merge_pdf_files()` needs to resolve both
+uniformly. **`split_pdf_pages()` has the identical gap on its own read side**: it calls
+`PdfReader(source_path)` directly (`lease_documents_pdf.py:231`) against whatever `LeaseSourceDocuments`
+row the split is being cut from — after Phase A, that source document can itself already be
+Blob-backed (uploaded while `LUCIDPM_STORAGE_BACKEND=azure_blob`, or migrated by Phase B), so this read
+needs the same resolver treatment as the merge boundary, not just its own write side (already covered
+above).
+
+**`LeaseDocumentSections` has no `PropertyID`/`DocumentCategory` of its own** — confirmed from its
+`CREATE TABLE` (`lease_documents.py:741-759`): only `LeaseSourceDocumentID INT NULL`, `LeaseID INT
+NULL`. A split section's property/category (needed to build its Blob key, matching
+`sections_folder(root, property, category)`'s existing local convention) only exists on the *linked*
+`LeaseSourceDocuments` row, reached via `LeaseSourceDocumentID` — which is nullable, so some section
+rows may have no link at all (legacy/orphaned rows). Phase B's migration must join through this FK and
+needs an explicit, documented fallback for the NULL case (see Phase B below) — it can't assume every
+section row resolves to a property/category cleanly.
+
 **The write side**, all in `LucidPM/pages/lease_documents_pdf.py`, all raw local filesystem I/O today
 — and **not uniform**, confirmed by reading each function's actual current body:
 - `save_uploaded_pdf()` (~170-186) and `copy_existing_pdf()` (~190-207) already build a
@@ -102,36 +131,64 @@ interface rather than redesigning it, and mirrors H66's own final lesson precise
 owns its collision strategy; the interface passes semantic parameters, never a pre-built path/key.**
 Add a second method:
 ```python
+from typing import Literal
+
 class DocumentStorage(Protocol):
     def save(self, lease_id: int, filename: str, data: bytes) -> str: ...   # existing (H66)
 
-    def save_source(self, property_name: str, document_category: str, filename: str, data: bytes) -> str:
-        """Persist a source/section document. Each implementation decides its own
-        collision handling — see the two call-site behaviors below, which differ
-        from each other and must be preserved exactly."""
+    def save_source(
+        self,
+        property_name: str,
+        document_category: str,
+        filename: str,
+        data: bytes,
+        *,
+        kind: Literal["template", "section"] = "template",
+        collision: Literal["unique_name", "retry_suffix"] = "unique_name",
+    ) -> str:
+        """Persist a source/section document.
+
+        kind picks the local subfolder / Blob key segment:
+          - "template" -> template_folder(root, property, category)   (uploads, copies)
+          - "section"  -> sections_folder(root, property, category)   (PDF splits)
+
+        collision picks the local collision strategy (Blob always uses its own
+        uuid-based, overwrite=False strategy regardless of this parameter):
+          - "unique_name"  -> caller's filename is already timestamp-unique
+                              (save_uploaded_pdf, copy_existing_pdf); write as-is,
+                              no retry loop.
+          - "retry_suffix" -> caller's filename is NOT guaranteed unique
+                              (split_pdf_pages); port the exact existing
+                              counter-suffix while-loop
+                              (lease_documents_pdf.py:242-246) into this method.
+        """
 
     def read(self, identifier: str) -> bytes: ...   # existing, generated-packages only, no change
     def exists(self, identifier: str) -> bool: ...  # existing, generated-packages only, no change
 ```
-Note: source/section reads do **not** go through these two Protocol methods at all — they go through
-the standalone `read_source_document()`/`source_document_exists()` resolver functions described below,
-which dispatch on the identifier's own shape rather than on whichever backend `save_source()` currently
-targets. That split (single-backend writes, identifier-dispatched reads) is deliberate — see "Local dev
-after Phase B" above for why.
-- `LocalFilesystemStorage.save_source()`: writes under `template_folder(property, category)` (or
-  `sections_folder(...)` for splits — the caller picks which root to construct and passes it as part
-  of `filename`'s path, or `save_source` takes an explicit `subfolder` param; decide the exact shape
-  during implementation, but the *outcome* must be identical). For callers that already pass a
-  timestamp-unique filename (`save_uploaded_pdf`, `copy_existing_pdf`), just write it — no extra
-  logic needed. For `split_pdf_pages`, **port its exact counter-suffix loop into this method** (the
-  same fix H66 gave `merge_pdf_files`/`LocalFilesystemStorage.save`) — don't leave the loop in
-  `split_pdf_pages` itself calling a "does this exist" check against a storage abstraction that may
-  not cheaply support that for Blob.
-- `AzureBlobStorage.save_source()`: build its own collision-safe key for **all three** callers
-  uniformly (e.g. `Sources/<property>/<category>/<uuid>_<filename>`, or
-  `Sources/<property>/<category>/Sections/<uuid>_<filename>` for splits) — `overwrite=False`, full
-  `uuid.uuid4().hex`, same reasoning as `AzureBlobStorage.save()` in H66. Don't try to reproduce the
-  timestamp-suffix or counter-loop conventions for Blob; they're solving a local-disk problem that
+Call sites: `save_uploaded_pdf`/`copy_existing_pdf` → `kind="template", collision="unique_name"`;
+`split_pdf_pages` → `kind="section", collision="retry_suffix"`.
+
+Note: source/section reads do **not** go through the Protocol's `read`/`exists` methods at all — they
+go through the standalone `read_source_document()`/`source_document_exists()` resolver functions
+described below, which dispatch on the identifier's own shape rather than on whichever backend
+`save_source()` currently targets. That split (single-backend writes, identifier-dispatched reads) is
+deliberate — see "Local dev after Phase B" above for why.
+- `LocalFilesystemStorage.save_source()`: `kind` selects `template_folder(root, property, category)`
+  vs `sections_folder(root, property, category)` — both already exist, no new path logic needed, just
+  branch on `kind`. `collision="unique_name"` writes the given filename directly (matches
+  `save_uploaded_pdf`/`copy_existing_pdf`'s current behavior exactly — they already guarantee
+  uniqueness). `collision="retry_suffix"` runs the ported counter-suffix loop (matches
+  `split_pdf_pages`'s current behavior exactly — same fix H66 gave `merge_pdf_files`/
+  `LocalFilesystemStorage.save`, ported here instead of left in `split_pdf_pages` itself, since a
+  "does this exist" check belongs with whichever backend actually owns collision detection).
+- `AzureBlobStorage.save_source()`: `kind` picks the key segment —
+  `Sources/<property>/<category>/<uuid>_<filename>` for `kind="template"`,
+  `Sources/<property>/<category>/Sections/<uuid>_<filename>` for `kind="section"` — `overwrite=False`,
+  full `uuid.uuid4().hex` in both cases, same reasoning as `AzureBlobStorage.save()` in H66. The
+  `collision` parameter is accepted (interface uniformity) but **ignored** — Blob always uses its own
+  uuid-based scheme regardless of which collision mode the caller asked for; don't try to reproduce the
+  timestamp-suffix or counter-loop conventions for Blob, they're solving a local-disk problem that
   doesn't apply the same way to Blob's namespace. **Return the key prefixed with the `azblob:` scheme**
   (`azblob:Sources/<property>/...`) — this is what makes the identifier self-describing for the
   resolver (see "Local dev after Phase B" above); the un-prefixed key is still what's actually stored
@@ -219,11 +276,27 @@ are Test-only. Prod migration is explicitly deferred (see Do Not Touch).
    `LUCIDPM_BLOB_CONNECTION_STRING`/`LUCIDPM_BLOB_CONTAINER` independent of `LUCIDPM_STORAGE_BACKEND`,
    fall back to plain `os.path.isfile`/`open` for anything unprefixed. Clear `RuntimeError` (naming the
    missing env var) if an `azblob:` identifier shows up with no connection string configured.
-4. Rewire `page_count()` and the two generation-time gate checks (`1486`, `1742`) plus the two
-   merge-time reads (`1573`, `~2260`) to go through `source_document_exists()` / `read_source_document()`
-   instead of `os.path.isfile()` / raw `PdfReader(path)`. `PdfReader` accepts a file-like object
-   (`io.BytesIO(read_source_document(identifier))`) — same technique H66's `merge_pdf_files()` already
-   uses for its own (Protocol-based) local-vs-blob-agnostic read.
+4. Rewire every place that currently assumes a local path for a source/section identifier — this is
+   more than the two gate checks:
+   - The two generation-time gate checks (`1486`, `1742` in `lease_package_builder.py`):
+     `os.path.isfile(p.file_path)` → `source_document_exists(p.file_path)`. (The two append sites,
+     `1573`/`~2260`, need no change themselves — they just add the identifier to
+     `pdf_paths_to_merge`; the actual read happens later, inside `merge_pdf_files()`.)
+   - **`merge_pdf_files()`'s own internal loop** (`lease_documents_pdf.py:1174-1197`) — its
+     `os.path.isfile(p)` missing-check becomes `source_document_exists(p)`, and its
+     `reader = PdfReader(path)` becomes `reader = PdfReader(io.BytesIO(read_source_document(path)))`.
+     This is the actual mixed-input fix: `pdf_paths_to_merge` entries that are local temp paths (from
+     rendered text) fall through the resolver's local branch unchanged; entries that are
+     `azblob:`-prefixed PDF-backed sections fall through the Blob branch — same loop, same signature,
+     `merge_pdf_files()` still returns `(bytes, page_count)` exactly as before, so
+     `save_generated_package()` and `/api/lease-generated-pdf` need no changes (see Do Not Touch).
+   - **`split_pdf_pages()`'s own read of the source it's cutting from**
+     (`lease_documents_pdf.py:231`): `reader = PdfReader(source_path)` becomes
+     `reader = PdfReader(io.BytesIO(read_source_document(source_path)))` — the source document being
+     split can itself already be Blob-backed after Phase A, independent of where the *split output*
+     gets written.
+   - `page_count()` (`~209-211`): `PdfReader(path)` becomes
+     `PdfReader(io.BytesIO(read_source_document(path)))`.
 5. Validate locally exactly like H66's checklist, plus the resolver specifically: both backends work
    for writes, byte-identical local default, collision behavior unchanged for local, collision-safe for
    Blob; **with `LUCIDPM_STORAGE_BACKEND=local` active, an `azblob:`-prefixed identifier still reads
@@ -247,29 +320,51 @@ touching any real `TenantCRM_Test` row.
    assume the ~16-row stale-path figure from the standing backlog item is the *total* row count that
    needs migrating; it's only the subset with the *old* root. Every row with a valid local path today
    still needs migrating to Blob — it just isn't blocked on the junction/bulk-update fix first.
-2. Write a one-time migration script (`db/data_updates/` or a scratch script, Mark's call which). For
-   each row with a non-null `StoredFilePath` that resolves to a real local file, **per row, in this
-   order**:
-   1. Read its bytes and compute a content hash (`sha256`).
-   2. Call the Phase A Blob `save_source()` to persist it, getting back the `azblob:`-prefixed
+2. Write a one-time migration script (`db/data_updates/` or a scratch script, Mark's call which).
+   **The script must construct its own Blob writer directly** — instantiate `AzureBlobStorage` (or
+   call `save_source()` against an explicitly-constructed Blob instance) rather than going through
+   `get_document_storage()`, and never rely on `LUCIDPM_STORAGE_BACKEND` being set to `azure_blob`.
+   `get_document_storage()` answers "where do new writes from the running app go," which is the wrong
+   question for a migration script — if it were used here and someone ran the script in a normal
+   local-default session (`LUCIDPM_STORAGE_BACKEND=local`, unset), it would silently write new *local*
+   files and then update `TenantCRM_Test` rows to point at paths that only exist on that one laptop,
+   corrupting the very rows it's supposed to fix. Read `LUCIDPM_BLOB_CONNECTION_STRING`/
+   `LUCIDPM_BLOB_CONTAINER` directly and fail fast if either is missing — don't fall back to anything.
+   For each row (both `LeaseSourceDocuments` and `LeaseDocumentSections`) with a non-null
+   `StoredFilePath` that resolves to a real local file, **per row, in this order**:
+   1. For a `LeaseDocumentSections` row, resolve `property_name`/`document_category` by joining
+      `LeaseSourceDocumentID -> LeaseSourceDocuments.LeaseSourceDocumentID` (`PropertyID`,
+      `DocumentCategory`). **`LeaseSourceDocumentID` is nullable** (confirmed in the schema, see
+      Current State) — for a row where it's `NULL` or doesn't resolve to a live source row, use a fixed
+      fallback bucket (e.g. `property_name="Unlinked"`, `document_category="Legacy"`) so the key is
+      still well-formed; record which rows hit the fallback in the manifest (an extra `fallback_used`
+      column) so they're easy to find and re-categorize by hand later if it matters.
+   2. Read its bytes and compute a content hash (`sha256`).
+   3. **Write the manifest entry with status `uploaded_pending_update`** — table, row ID, old
+      `StoredFilePath`, old `RelativePath`, old `StorageRoot` (the full old triple, not just the path —
+      rollback needs to restore the complete original row, not a partial one), content hash,
+      `fallback_used` — **before** calling `save_source()`.
+   4. Call the Phase A Blob `save_source()` (`kind="template"` for `LeaseSourceDocuments`,
+      `kind="section"` for `LeaseDocumentSections`) to persist it, getting back the `azblob:`-prefixed
       identifier.
-   3. **Append that row's manifest entry (table, row ID, old `StoredFilePath`, new identifier, hash,
-      status) before issuing the row's SQL `UPDATE`** — the manifest must reflect exactly what's been
-      migrated at every point, including if the script is interrupted mid-run; writing it after the
-      fact risks a manifest that doesn't match reality on a crash.
-   4. `UPDATE` the row's `StoredFilePath` (to the new `azblob:` identifier), `RelativePath` (the
-      de-prefixed key), and `StorageRoot` (the container name) per the Phase A write rule.
+   5. `UPDATE` the row's `StoredFilePath` (to the new identifier), `RelativePath` (de-prefixed key), and
+      `StorageRoot` (container name) per the Phase A write rule.
+   6. **Update that same manifest entry's status to `migrated`** (or `failed` with the error, if the
+      `UPDATE` didn't succeed) once step 5 commits. A manifest entry stuck at
+      `uploaded_pending_update` after the script exits means exactly what it says: the Blob copy exists
+      but the row was never updated to point at it — safe to re-run for those rows specifically (the
+      Blob upload is redone, harmless) rather than ambiguous.
    **Do not delete the local files** — leave them in place as a fallback until Phase B is verified,
    matching this project's existing "archive, don't delete" discipline (`_vN` files, the H63 Fernet
    rotation keeping old keys until verified).
-3. **The manifest is a hard prerequisite for step 2, not an afterthought** (CSV or JSON, committed
-   alongside the script or kept as a durable artifact — Mark's call which): one entry per document with
-   table, row ID, old `StoredFilePath`, new Blob identifier, content hash, and status (migrated /
-   skipped / failed). Blob writes and the SQL `UPDATE` can't share one transaction, so this manifest is
-   what makes the migration auditable and reversible — generate the rollback as a plain SQL script from
-   the manifest (`UPDATE ... SET StoredFilePath = <old>, RelativePath = <old>, StorageRoot = <old>
-   WHERE ID = <row ID>`) rather than trying to reconstruct it after the fact. Local files are untouched
-   regardless, so rollback only ever needs to restore DB state.
+3. **The manifest (state transitions above, full old-row triple, `fallback_used`) is what makes the
+   migration auditable and reversible** — Blob writes and the SQL `UPDATE` can't share one transaction,
+   so there's no other way to know exactly what happened if the script stops partway through. Generate
+   the rollback as a plain SQL script from the manifest, one statement per `migrated` row
+   (`UPDATE ... SET StoredFilePath = <old>, RelativePath = <old>, StorageRoot = <old> WHERE ID = <row
+   ID>`), and separately flag any `uploaded_pending_update` rows for manual follow-up (re-run or
+   discard the orphaned Blob copy) rather than rolling them back automatically. Local files are
+   untouched regardless, so rollback only ever needs to restore DB state.
 4. **Dry-run first**: log what *would* migrate (row ID, old path, new key) without executing any
    `UPDATE` or Blob write, and review the list before running it for real.
 5. After migration, spot-check a sample: download the Blob-stored version of a few rows and diff
@@ -293,8 +388,14 @@ touching any real `TenantCRM_Test` row.
 - **`TenantCRM` (Prod).** This handoff is Test-only, start to finish. Prod migration is a separate,
   later handoff, run only after Phase B is fully verified on Test — same sequencing the roadmap
   already specifies for Cycle 5.1 ("migrate Test DB and verify before Prod").
-- **The `LeaseGeneratedDocuments` pair from H66/H67** (`merge_pdf_files`, `save_generated_package`,
-  `/api/lease-generated-pdf`) — already correct, already deployed, don't touch.
+- **`save_generated_package()` and `/api/lease-generated-pdf`** (the `LeaseGeneratedDocuments` write
+  and read paths from H66/H67) — already correct, already deployed, don't touch.
+- **`merge_pdf_files()`'s external contract** — its signature (`section_paths: Iterable[str] ->
+  (bytes, int)`) and its callers (`save_generated_package()`, the `LeaseGeneratedDocuments` INSERT)
+  don't change. Its **internal read loop is in scope** (see The Fix, Phase A step 4) — that's a
+  narrower, precise carve-out, not a contradiction of "don't touch H66/H67's generated-package path":
+  the function's job (merge N inputs into one PDF) and its output are identical, only how it reads each
+  input changes.
 - **Deleting local source/section files.** Keep them after migration, at least until Phase B is fully
   verified — this is real tenant-relevant document data, not disposable.
 - **The admin "storage root" screen redesign.** The roadmap flags retiring/repurposing it as a
@@ -323,15 +424,30 @@ touching any real `TenantCRM_Test` row.
       `RuntimeError`, not a stack trace.
 - [ ] `RelativePath`/`StorageRoot` are meaningful for both backends (local: unchanged; Blob: container
       name + de-prefixed key), not `NULL`.
+- [ ] **A package generates successfully from a mix of a rendered-text section, a local-path PDF
+      section, and an `azblob:`-prefixed PDF section in the same package** — proves `merge_pdf_files()`'s
+      internal loop actually handles all three inputs in one merge, not just each in isolation.
+- [ ] `split_pdf_pages()` successfully splits a source document whose own `StoredFilePath` is
+      `azblob:`-prefixed (not just a local one).
 - [ ] `import LucidPM.LucidPM` exits 0.
 
 **Phase B:**
 - [ ] Stale-path prerequisite confirmed resolved before running.
 - [ ] Real row counts captured (Step 1's queries) before migrating.
-- [ ] Migration manifest entry written **before** each row's SQL `UPDATE`, not after the batch —
-      confirm by checking the manifest reflects partial progress if the script is interrupted early.
-- [ ] Rollback SQL generated from the manifest and reviewed (not executed, unless a rollback is
-      actually needed).
+- [ ] Migration script constructs its Blob writer explicitly and does not read
+      `LUCIDPM_STORAGE_BACKEND` — confirmed by running it with that variable unset/`local` and checking
+      no local files were written as a side effect.
+- [ ] `LeaseDocumentSections` rows resolve property/category via the `LeaseSourceDocumentID` join;
+      rows hitting the `NULL`/orphaned fallback are flagged `fallback_used` in the manifest and reviewed
+      by hand.
+- [ ] Migration manifest entry written with status `uploaded_pending_update` **before** each row's Blob
+      upload and SQL `UPDATE`, transitioned to `migrated` (or `failed`) after — confirm by checking the
+      manifest reflects partial, in-progress state if the script is interrupted early, and that every
+      entry records the full old triple (`StoredFilePath`, `RelativePath`, `StorageRoot`), not just the
+      old path.
+- [ ] Rollback SQL generated from the manifest's `migrated` rows and reviewed (not executed, unless a
+      rollback is actually needed); any `uploaded_pending_update` rows are flagged separately for manual
+      follow-up, not silently rolled back.
 - [ ] Dry run reviewed before the real run.
 - [ ] Sample of migrated files verified byte-identical to their local originals (hash match).
 - [ ] Local files still present after migration (not deleted).
@@ -351,8 +467,10 @@ touching any real `TenantCRM_Test` row.
 c:\Inspirion\Dev\TenantCRM\LucidPM\
   LucidPM\document_storage.py               ← Phase A, extend the interface
   LucidPM\pages\lease_documents_pdf.py        ← Phase A (save_uploaded_pdf, copy_existing_pdf,
-                                                  split_pdf_pages, page_count)
-  LucidPM\pages\lease_package_builder.py      ← Phase A (lines ~1486, ~1573, ~1742, ~2260 area)
+                                                  split_pdf_pages incl. its own PdfReader(source_path)
+                                                  read, page_count, merge_pdf_files' internal read loop)
+  LucidPM\pages\lease_package_builder.py      ← Phase A (gate checks ~1486/~1742; append sites
+                                                  ~1573/~2260 unchanged, see Current State)
   db\data_updates\  (or a scratch script)      ← Phase B, one-time migration script — Test DB only
 ```
 
