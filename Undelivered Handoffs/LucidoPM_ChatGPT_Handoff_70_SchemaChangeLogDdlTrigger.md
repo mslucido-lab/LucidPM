@@ -22,9 +22,10 @@ The log is exactly as complete as human discipline made it, no more.
 **The fix:** a database-level DDL trigger that fires automatically on schema-changing statements and
 writes its own row via `EVENTDATA()` — the SQL Server function that returns the actual executed
 command text as XML. This flips the guarantee from "logged if someone remembered" to "logged because
-the database itself can't make the change without it," and captures the literal T-SQL that ran, not a
-human's after-the-fact description — so even a change made ad hoc in SSMS with nothing saved to disk
-still leaves an exact record.
+the database itself can't make the change without it," and captures the literal T-SQL that ran (up to
+`Notes`' existing 1000-character limit — truncated with a visible marker beyond that, see The Fix), not
+a human's after-the-fact description — so even a change made ad hoc in SSMS with nothing saved to disk
+still leaves a record.
 
 **This is not a data-loss recovery for the 24-25 already-missing scripts** — those are gone, this
 doesn't reconstruct them (`db/history/CHANGELOG.md` already documents what's known about each). It
@@ -94,10 +95,15 @@ Create the trigger (Step 1) against Test only, run one harmless `ALTER TABLE ...
 - Exactly one row lands in `SchemaChangeLog`, with the expected `ScriptName`/`Notes` shape.
 - The `Notes` column actually contains the executed `ALTER TABLE` text, not `NULL` (confirms the
   `TSQLCommand/CommandText` XPath is correct for this SQL Server version).
-- Running the same statement twice produces two distinct rows (no `ScriptName` collision).
+- Running the same statement twice produces two distinct rows (no `ScriptName` collision) — including
+  when run twice in immediate succession (the `NEWID()` suffix, not the timestamp, is what's actually
+  being proven here).
 - Deliberately breaking the trigger body (e.g., temporarily commenting out the `TRY/CATCH`) and
   forcing a `ScriptName` collision does **not** roll back the `ALTER TABLE` once the `TRY/CATCH` is
   back in place — i.e., prove the defensiveness actually works, don't just trust the code.
+- Run one deliberately long `ALTER TABLE` (padding it with comments or a long column list past 1000
+  characters) and confirm the resulting `Notes` value is truncated to `...[TRUNCATED]` rather than
+  either erroring or silently ending mid-statement with no indication.
 
 Only after this passes, repeat for local `TenantCRM`, then (separately, since Azure SQL Database does
 not support every DDL-trigger feature server-scoped SQL Server does) verify once against Azure
@@ -124,13 +130,26 @@ BEGIN
         DECLARE @schemaName  NVARCHAR(128) = @data.value('(/EVENT_INSTANCE/SchemaName)[1]', 'nvarchar(128)');
         DECLARE @objectName  NVARCHAR(128) = @data.value('(/EVENT_INSTANCE/ObjectName)[1]', 'nvarchar(128)');
         DECLARE @loginName   NVARCHAR(128) = @data.value('(/EVENT_INSTANCE/LoginName)[1]', 'nvarchar(128)');
-        DECLARE @commandText NVARCHAR(1000) = @data.value('(/EVENT_INSTANCE/TSQLCommand/CommandText)[1]', 'nvarchar(1000)');
+        DECLARE @rawCommand  NVARCHAR(MAX) = @data.value('(/EVENT_INSTANCE/TSQLCommand/CommandText)[1]', 'nvarchar(max)');
 
+        -- Notes is NVARCHAR(1000) (see Current State) — truncate explicitly, with a visible marker,
+        -- rather than let an implicit cast silently cut a long command off mid-statement.
+        DECLARE @suffix NVARCHAR(20) = N' ...[TRUNCATED]';
+        DECLARE @commandText NVARCHAR(1000) =
+            CASE WHEN @rawCommand IS NULL THEN NULL
+                 WHEN LEN(@rawCommand) > 1000 THEN LEFT(@rawCommand, 1000 - LEN(@suffix)) + @suffix
+                 ELSE @rawCommand END;
+
+        -- ScriptName has a UNIQUE index (see Current State) — a timestamp alone isn't a guaranteed-unique
+        -- defense (clock resolution isn't guaranteed to match the datatype's stated precision on every
+        -- host), so append a NEWID() fragment. This is the actual collision guarantee; the timestamp is
+        -- for human readability only.
         DECLARE @scriptName NVARCHAR(255) =
             '[AUTO] ' + ISNULL(@eventType, 'DDL')
             + CASE WHEN @objectName IS NOT NULL
                    THEN ' on ' + ISNULL(@schemaName + '.', '') + @objectName ELSE '' END
-            + ' @ ' + CONVERT(NVARCHAR(30), SYSDATETIME(), 121);
+            + ' @ ' + CONVERT(NVARCHAR(30), SYSDATETIME(), 121)
+            + ' #' + LEFT(CONVERT(NVARCHAR(36), NEWID()), 8);
         IF LEN(@scriptName) > 255 SET @scriptName = LEFT(@scriptName, 255);
 
         INSERT INTO dbo.SchemaChangeLog (ScriptName, AppliedOn, AppliedBy, Notes)
@@ -142,11 +161,22 @@ BEGIN
     END CATCH
 END;
 ```
-Design notes, matching the two risks in Current State:
-- `ScriptName` is built from the event type, schema-qualified object name, and a full-precision
-  (`style 121`) timestamp — unique-by-construction, and visually distinct from a manual entry's real
-  filename (the `[AUTO] ` prefix makes this immediate on inspection or in `CHANGELOG.md`-style
-  queries).
+Design notes, matching the two risks in Current State plus two review corrections:
+- `ScriptName`'s actual collision defense is the appended `NEWID()` fragment, not the timestamp.
+  Tested empirically against this local instance: `CONVERT(NVARCHAR, SYSDATETIME(), 121)` on a
+  `datetime2` source actually returned full 100ns precision here (`2026-09-12 16:30:44.8840759`), not
+  the millisecond precision style 121 is sometimes described as giving for legacy `datetime` — but
+  that's a property of one instance's version/behavior, not something to rely on across local SQL
+  Express, Azure SQL, and whatever's next. System clock resolution can also be coarser than the
+  datatype's stated precision on some hosts regardless. The timestamp stays for human readability when
+  scanning `SchemaChangeLog`; the `NEWID()` suffix is what actually guarantees no collision against the
+  `UNIQUE` index, independent of clock behavior on any given host.
+- **`Notes`' 1000-character limit is real and explicit, not glossed over.** A DDL statement longer than
+  1000 characters gets truncated with a visible `...[TRUNCATED]` marker rather than silently cut off —
+  so "captures the executed T-SQL" is accurate for anything under the limit and honestly marked when
+  it isn't, instead of overclaiming exact fidelity for every possible statement length. The schema
+  itself isn't changed (see Do Not Touch) — this handoff works within `NVARCHAR(1000)`, it doesn't
+  widen it.
 - The whole body is wrapped in `TRY/CATCH` with an intentionally empty `CATCH` — a logging failure is
   swallowed, never propagated back to fail the triggering `CREATE`/`ALTER`/`DROP`.
 - Event list is curated to schema objects (`TABLE`, `INDEX`, `VIEW`, `PROCEDURE`, `FUNCTION`,
@@ -198,9 +228,17 @@ rather than left open):
   handoff prevents the gap from growing, it doesn't fill it in.
 - **The duplicate `UQ_SchemaChangeLog_ScriptName` / `UX_SchemaChangeLog_ScriptName` indexes.** A
   pre-existing oddity, separately trackable if it ever matters, not this handoff's job.
-- **`db/baseline_schema.sql`.** This trigger is itself a schema object and belongs in a regenerated
-  baseline (`python db/generate_baseline_schema.py`) as a normal follow-on step — but don't hand-edit
-  the baseline file directly.
+- **`db/generate_baseline_schema.py`.** Confirmed by reading it directly: it only queries
+  `sys.tables`, `sys.foreign_keys`, and `sys.indexes` — no `sys.triggers` query exists at all, and its
+  own docstring scopes it to "a deterministic, from-scratch CREATE TABLE..." generator. **Regenerating
+  `db/baseline_schema.sql` will NOT include `trg_LogSchemaChanges`** — an earlier draft of this handoff
+  claimed it would, which was wrong (see Validation Checklist and File Locations for the corrected
+  claim). Extending the generator to also emit database-scoped DDL triggers is real, separate work with
+  its own testing burden — out of scope for this handoff, tracked as a follow-up, not a blocker to
+  calling H70 done.
+- **`db/baseline_schema.sql`** (the file itself). Don't hand-edit it to add the trigger by hand either —
+  if the generator doesn't cover it, the honest state is "the baseline doesn't reflect this trigger
+  yet," not a hand-patched baseline that looks generator-produced but isn't.
 - **Application code.** Nothing in `LucidPM/` reads or writes `SchemaChangeLog` today; this handoff
   doesn't change that.
 
@@ -221,12 +259,16 @@ rather than left open):
       confirms this is understood as intentional overlap, not a bug, until Step 3's guidance is
       followed for new scripts.
 - [ ] `docs/Database.md` updated per Step 3.
-- [ ] `db/baseline_schema.sql` regenerated after all 4 targets have the trigger, and confirmed to
-      include it.
+- [ ] Confirmed (not assumed) that `db/generate_baseline_schema.py` does not emit
+      `trg_LogSchemaChanges` after regeneration — its current scope is tables/FKs/indexes only. Note
+      this gap in `docs/Database.md` alongside Step 3's update rather than silently leaving the
+      baseline out of sync with no explanation.
 
 **Done when:** all 4 database targets auto-log schema-changing DDL without any script needing to
-remember to do so, verified live (not just by code review), with `docs/Database.md` and the baseline
-schema reflecting the new trigger.
+remember to do so, verified live (not just by code review), with `docs/Database.md` reflecting both
+the new trigger and the known baseline-generator gap. Extending
+`db/generate_baseline_schema.py` to cover triggers is a separate, optional follow-up — not required
+for this handoff to be done.
 
 ---
 
@@ -241,10 +283,14 @@ c:\Inspirion\Dev\TenantCRM\LucidPM\
                                                                      it's the LAST script to use the
                                                                      old pattern, everything after it
                                                                      relies on the trigger instead)
-  docs\Database.md                                                ← Step 3's guidance update
-  db\baseline_schema.sql                                          ← regenerate after rollout
-                                                                     (`python db/generate_baseline_schema.py`)
+  docs\Database.md                                                ← Step 3's guidance update, plus a
+                                                                     note that db/generate_baseline_
+                                                                     schema.py does not (yet) emit
+                                                                     this trigger on regeneration
 ```
+`db/baseline_schema.sql` is deliberately **not** listed as an output here — confirmed by reading
+`db/generate_baseline_schema.py` that it has no `sys.triggers` query at all, so regenerating it will
+not include `trg_LogSchemaChanges`. See Do Not Touch.
 
 Reference material already in the repo:
 ```
