@@ -21,7 +21,7 @@ local production setup until the cloud version is proven.
 | 1 — Azure foundation | Subscription, resource group, SQL server, free DB confirmed at ~$0 | 2 | **G1: free tier real?** |
 | 2 — App vs Azure SQL | LucidPM runs locally against Azure SQL, core workflows validated | 2–3 | **✅ G2 PASSED 2026-09-10** |
 | 3 — Containerize + deploy | LucidPM live on a temp `*.azurecontainerapps.io` URL, scaling to zero | 3–5 | **✅ Gate 3 PASSED 2026-09-11** |
-| 4 — Blob storage | One lease PDF survives a container restart — **POC COMPLETE** | 2 | **✅ Gate 4 PASSED 2026-09-11 (scoped test — see note)** |
+| 4 — Blob storage | One lease PDF survives a container restart — **POC COMPLETE** | 2 | **🟡 Cycle 4.2 deployed 2026-09-11; restart-survival proof outstanding — see note** |
 | 5 — LucidPM production | Real data migrated, auth, custom subdomain, cutover | 6–8 | — |
 | 6 — Portfolio Manager | Second Container App, cross-DB refactor, its own subdomain | 8–12 (soft) | — |
 
@@ -36,13 +36,18 @@ everything ≈ 6–12 months.
 
 ## Progress log
 
-- **2026-09-11 — Cycle 4.2 deployed; GATE 4 PASSED (scoped) — Handoff 68 written for a new finding.**
-  H67's changes deployed successfully: Container App revision `0000002` healthy, running
-  `ghcr.io/mslucido-lab/lucidpm:0.2.0`, Blob storage enabled for generated packages. A text-only lease
-  package generates and downloads correctly through the live app. **Gate 4 is recorded PASSED for the
-  specific test it and H67 both defined** — a generated (text-only) lease PDF via Blob storage — not
-  reopened by the finding below; confirm Step 5's scale-to-zero-and-retrieve-again proof specifically
-  if it wasn't already run as part of this. **New finding, not a Gate 4 regression:** generating a
+- **2026-09-11 — Cycle 4.2 deployed; Gate 4's restart-survival proof still outstanding — Handoff 68
+  written for a separate new finding.** H67's changes deployed successfully: Container App revision
+  `0000002` healthy, running `ghcr.io/mslucido-lab/lucidpm:0.2.0`, Blob storage enabled for generated
+  packages. A text-only lease package generates and downloads correctly through the live app (H67
+  Step 4's first half). **Gate 4 itself is NOT yet passed** — the actual test the roadmap and H67 both
+  define is "generate → scale to zero → retrieve the same file intact" (H67 Steps 4b/5), and that
+  scale-to-zero-then-retrieve sequence has not been run in this session yet. (An earlier version of
+  this entry recorded Gate 4 as passed on the generation step alone — that overstated what had
+  actually been verified; corrected here.) Remaining before Gate 4 can be marked passed: (1) confirm
+  the text-only package's blob object exists, (2) `az containerapp update --min-replicas 0`, wait for
+  zero replicas, (3) reopen the app and re-download that exact package, confirming it survived.
+  **New finding, not a Gate 4 regression:** generating a
   package that includes a *PDF-backed* section (e.g. Lease Package #2 / "General Lease") fails with
   "Missing PDF files for these PDF-only sections" — `LeaseSourceDocuments`/`LeaseDocumentSections`
   still store Windows local filesystem paths, which a Container App replica has no access to at all
