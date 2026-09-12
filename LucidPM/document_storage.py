@@ -207,6 +207,22 @@ def get_source_document_storage(storage_root: str | None = None) -> DocumentStor
     )
 
 
+def is_blob_storage_backend() -> bool:
+    """Return whether this process writes new documents to Azure Blob Storage."""
+    return os.getenv("LUCIDPM_STORAGE_BACKEND", "local").strip().lower() == "azure_blob"
+
+
+def storage_backend_label(storage_root: str | None = None) -> str:
+    """Return the human-readable document location for status UI."""
+    if is_blob_storage_backend():
+        container = os.getenv("LUCIDPM_BLOB_CONTAINER", "lucidpm-documents")
+        return f"Azure Blob Storage ({container})"
+
+    from LucidPM.pages.lease_documents_pdf import DEFAULT_DOCUMENT_ROOT, normalize_storage_root
+
+    return normalize_storage_root(storage_root or DEFAULT_DOCUMENT_ROOT)
+
+
 def _blob_key(identifier: str) -> str | None:
     if not identifier.startswith(SOURCE_BLOB_PREFIX):
         return None

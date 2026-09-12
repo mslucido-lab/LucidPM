@@ -11,12 +11,14 @@ import reflex as rx
 
 from LucidPM.state import AppState, run_query, run_exec, BRAND_DARK, encrypt_value, decrypt_value, send_email
 from LucidPM.components.sidebar import page_shell
+from LucidPM.document_storage import is_blob_storage_backend, storage_backend_label
 from LucidPM.pages.lease_documents_pdf import DEFAULT_DOCUMENT_ROOT
 
 
 # Page width constant — dynamic sidebar width + page_shell padding (32px each side = 64px)
 # Sidebar script updates --lucid-sidebar-width when resized.
 FULL_PAGE_WIDTH = "calc(100vw - var(--lucid-sidebar-width, 220px) - 64px)"
+USING_BLOB_STORAGE = is_blob_storage_backend()
 
 
 def responsive_card(*children, **props) -> rx.Component:
@@ -34,6 +36,66 @@ def responsive_card(*children, **props) -> rx.Component:
         width=props.pop("width", "100%"),
         style=style,
         **props,
+    )
+
+
+def _storage_settings_card() -> rx.Component:
+    """Render the storage setting appropriate to this deployment's backend."""
+    children: list[rx.Component] = [
+        rx.text("Lease document storage", size="4", weight="bold", color=BRAND_DARK),
+    ]
+    if USING_BLOB_STORAGE:
+        children.extend(
+            [
+                rx.text(
+                    "Source PDFs, split sections, and generated packages are stored in Azure Blob "
+                    "Storage. This deployment setting is not editable here.",
+                    size="2",
+                    color="#666",
+                ),
+                rx.vstack(
+                    rx.text("Storage backend", size="1", color="#666"),
+                    rx.text(storage_backend_label(), size="2", weight="bold", color=BRAND_DARK),
+                    spacing="1",
+                    width="100%",
+                ),
+            ]
+        )
+    else:
+        children.extend(
+            [
+                rx.text(
+                    "Root folder used for uploaded lease PDFs, split sections, and generated packages.",
+                    size="2",
+                    color="#666",
+                ),
+                rx.vstack(
+                    rx.text("Lease document storage root", size="1", color="#666"),
+                    rx.input(
+                        value=AdminSettingsState.storage_root,
+                        on_change=AdminSettingsState.set_storage_root,
+                        placeholder=DEFAULT_DOCUMENT_ROOT,
+                        width="100%",
+                    ),
+                    spacing="1",
+                    width="100%",
+                ),
+                rx.cond(
+                    AdminSettingsState.storage_root_changed,
+                    rx.callout.root(
+                        rx.callout.text(
+                            "Changing this path does not move existing files. Move existing files "
+                            "manually or old StoredFilePath references may break."
+                        ),
+                        color_scheme="orange",
+                        width="100%",
+                    ),
+                ),
+            ]
+        )
+    return responsive_card(
+        rx.vstack(*children, spacing="3", width="100%", align_items="start"),
+        width="100%",
     )
 
 
@@ -447,17 +509,7 @@ def admin_settings_content() -> rx.Component:
         rx.text("Deployment-level settings for Lucid Property Manager.", size="2", color="#555"),
         rx.cond(AdminSettingsState.form_error != "", rx.callout.root(rx.callout.text(AdminSettingsState.form_error), color_scheme="red", width="100%")),
         rx.cond(AdminSettingsState.form_success != "", rx.callout.root(rx.callout.text(AdminSettingsState.form_success), color_scheme="green", width="100%")),
-        responsive_card(rx.vstack(
-            rx.text("Lease document storage", size="4", weight="bold", color=BRAND_DARK),
-            rx.text("Root folder used for uploaded lease PDFs, split sections, and generated packages.", size="2", color="#666"),
-            rx.vstack(
-                rx.text("Lease document storage root", size="1", color="#666"),
-                rx.input(value=AdminSettingsState.storage_root, on_change=AdminSettingsState.set_storage_root, placeholder=DEFAULT_DOCUMENT_ROOT, width="100%"),
-                spacing="1", width="100%",
-            ),
-            rx.cond(AdminSettingsState.storage_root_changed, rx.callout.root(rx.callout.text("Changing this path does not move existing files. Move existing files manually or old StoredFilePath references may break."), color_scheme="orange", width="100%")),
-            spacing="3", width="100%", align_items="start",
-        ), width="100%"),
+        _storage_settings_card(),
         responsive_card(rx.vstack(
             rx.text("Developer tools", size="4", weight="bold", color=BRAND_DARK),
             rx.checkbox("Enable developer-only local PDF import tools", checked=AdminSettingsState.developer_tools_enabled, on_change=AdminSettingsState.set_developer_tools_enabled),

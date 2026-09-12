@@ -169,20 +169,7 @@ Four-tab layout:
 #      Use same resizable splitter pattern as Issue 8 (JS drag, state on mouseup).
 #      State var for split: `load_tab_split_pct: int = 30` (left panel default 30%).
 #
-#   🟢 Issue 10 - Storage root: move out of Load tab into Admin Settings screen.
-#      REASON: storage_root is a deployment-time setting, not a runtime decision.
-#      Changing it mid-use is dangerous - existing LeaseDocumentSections rows have
-#      StoredFilePath and StorageRoot baked in pointing at the old location. A mid-stream
-#      change would split file references across two paths with no reconciliation.
-#      LOAD TAB: replace the storage root input with a read-only display pill -
-#        "Files stored in: C:\TenantCRM\LeaseDocuments  [Edit in Settings]"
-#      ADMIN SETTINGS SCREEN: add storage_root as a named setting in AppSettings table
-#        (SettingKey = 'LeaseDocumentStorageRoot'). Settings screen should also surface
-#        EnableDeveloperTools (already in AppSettings). Add a migration warning banner
-#        when the storage root is changed: "Changing this path does not move existing
-#        files. Ensure all files are physically moved to the new location before saving."
-#      _load_settings() already reads from AppSettings - extend it to also load
-#        storage_root from the new key. Fall back to DEFAULT_DOCUMENT_ROOT if not set.
+#   Storage-root configuration now lives in Admin Settings; H71 makes its display backend-aware.
 #
 # PHASE 2 - PHASE 3 TEXT INGESTION (after cleanup is verified):
 #   Add PDF text extraction UI to Tab 2 (Parse & Section).
@@ -232,7 +219,11 @@ import reflex as rx
 
 from LucidPM.state import AppState, run_query, run_exec, resolve_upload_filename, BRAND_DARK, BRAND_PRIMARY
 from LucidPM.components.sidebar import page_shell
-from LucidPM.document_storage import source_document_location
+from LucidPM.document_storage import (
+    is_blob_storage_backend,
+    source_document_location,
+    storage_backend_label,
+)
 from LucidPM.lease_merge import extract_tokens
 from LucidPM.pages.lease_documents_pdf import (
     DEFAULT_DOCUMENT_ROOT,
@@ -256,6 +247,7 @@ PROPERTY_GENERAL = "General / All Properties"
 # page_shell's content box is a flex child, so this page needs an explicit
 # viewport-relative width to avoid shrinking to the selected tab's contents.
 FULL_PAGE_WIDTH = "calc(100vw - var(--lucid-sidebar-width, 220px) - 64px)"
+USING_BLOB_STORAGE = is_blob_storage_backend()
 
 
 def _safe_int(value, default: int = 0) -> int:
@@ -3468,7 +3460,18 @@ def _tab_load() -> rx.Component:
                                 align="center",
                             ),
                             rx.box(
-                                rx.hstack(rx.text("Files stored in:", size="1", color="#666"), rx.text(LeaseDocumentState.storage_root, size="1", weight="bold", color=BRAND_DARK), rx.spacer(), rx.badge("Edit in Settings", color_scheme="gray", variant="soft"), width="100%", align="center"),
+                                rx.hstack(
+                                    rx.text("Files stored in:", size="1", color="#666"),
+                                    (
+                                        rx.text(storage_backend_label(), size="1", weight="bold", color=BRAND_DARK)
+                                        if USING_BLOB_STORAGE
+                                        else rx.text(LeaseDocumentState.storage_root, size="1", weight="bold", color=BRAND_DARK)
+                                    ),
+                                    rx.spacer(),
+                                    *([] if USING_BLOB_STORAGE else [rx.badge("Edit in Settings", color_scheme="gray", variant="soft")]),
+                                    width="100%",
+                                    align="center",
+                                ),
                                 style={"background": "#f8f9fc", "border": "1px solid #e1e5ee", "border_radius": "8px", "padding": "10px", "width": "100%"},
                             ),
                             rx.grid(
