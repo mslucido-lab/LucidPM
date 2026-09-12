@@ -5,10 +5,10 @@ handoff is still the design of record — this runbook exists because the stale-
 (H69's own Step 0) turned up a real data problem mid-run that needed resolving before continuing, and
 this captures exactly where things stand and what to do next so nothing has to be re-derived.
 
-**Status (2026-09-12):** H69 is paused **before any Blob upload**. The revert in Step 2 below has not
-been applied yet, and its input (the 17-row breakdown) has only been checked from one machine's shell
-session, not saved anywhere durable — **Step 1 re-derives it independently before anything is
-written.**
+**Status (2026-09-12): COMPLETED.** The 17-row comparison matched the documented 8/3/6 split; the
+ guarded six-row revert updated exactly 2 source rows and 4 section rows; all 17 PDFs were migrated to
+ Blob and hash-verified. The final local Production package test passed. See
+ `docs/cycle-5.1-validation.md`.
 
 ---
 

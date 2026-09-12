@@ -123,12 +123,13 @@ Reworked the `/admin/lease-templates` page so the two heavily-used modules (Pack
 
 ### Standing backlog (not started; Mark to say when)
 
-- **Source/section PDF Blob migration - Test passed; Prod remains pending.** H68 resolved the stale
-  Test paths, migrated 25 `TenantCRM_Test` source/section rows to Azure Blob with hash verification,
-  and deployed `ghcr.io/mslucido-lab/lucidpm:0.3.0`. Lease Package #2 (General Lease) now generates
-  and downloads through the live Container App. Local originals remain. `TenantCRM` is deliberately
-  untouched: its stale paths and Blob migration need a separate reviewed production handoff. Evidence:
-  `docs/cycle-5.1-early-validation.md`.
+- **Source/section PDF Blob migration - Test and Prod passed.** H68 migrated 25
+  `TenantCRM_Test` rows and H69 migrated 17 `TenantCRM` rows to Azure Blob, with manifest-backed
+  hash verification and original local files retained. H69 corrected six newer Production records to
+  use the live `C:\Dell Inspirion` root before migration; the OneDrive backup was stale for those files.
+  Mark verified the formerly affected 4C's Option Extension Agreement with a dual signature page from
+  local Prod using Blob storage. The Container App remains intentionally Test-only. Evidence:
+  `docs/cycle-5.1-early-validation.md` and `docs/cycle-5.1-validation.md`.
 - **Merge-token catalog — planned & scoped 2026-08-29 (now the active thread; see above + `project_token_catalog_idea` memory).** `dbo.MergeTokenCatalog` table both DBs (TokenName, DisplayName, GroupName, Description, Kind `field`|`computed`, SourceObject, SourceColumn, Format, SortOrder, IsActive, ExampleValue). `field` tokens resolve generically in `lease_merge.py`: `SourceObject` from a fixed whitelist of already-loaded row-dicts (`lease`/`tenant`/`property`/`suite`/`parent_lease`), `SourceColumn` + a fixed `Format` enum — **no SQL stored in data**. Adding a token on an already-selected column = 1 INSERT; a genuinely new DB column = 1-line Python edit to the base SELECT. Computed tokens (`AsAmendedPhrase`, `OriginalOptionRent`, `PaymentScheduleBlock`, …) keep their logic in `get_lease_merge_context()` forever but get a catalog row flagged `computed` (metadata-only editable) so the picker stays complete. `_available_token_buttons_panel` (`lease_documents.py`, the only picker — currently 86 hardcoded strings vs 121 resolver keys, already drifted) reads the catalog instead. Migration: `db/history/013_…` schema script + a `db/data_updates/` seed that reproduces today's picker exactly. **P1** = table + seed + resolver + picker, no admin UI. **P2** = `/admin/merge-tokens` list/detail page w/ live preview. **P3 (opt)** = package builder flags unknown tokens vs catalog.
 - **DDL trigger to auto-populate `dbo.SchemaChangeLog`** on both DBs — captures executed T-SQL via `EVENTDATA()`. Would close the gap the `db/history/` reorg had to work around. Needs documenting in `docs/Database.md` + a decision on the now-redundant manual `INSERT INTO SchemaChangeLog` lines in `db/history/` scripts.
 - **Handoff 45** — narrow `_standalone_state()` in `LucidPM.py` to the required ancestor chain. Written, in `Undelivered Handoffs/`, never implemented.

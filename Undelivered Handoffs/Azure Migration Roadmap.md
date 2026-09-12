@@ -36,6 +36,13 @@ everything ≈ 6–12 months.
 
 ## Progress log
 
+- **2026-09-12 - Cycle 5.1 / Handoff 69 PASSED on Prod.** All 17 Production source/section PDFs
+  migrated to Blob with manifest-backed hash checks and retained local originals. A stale-path detour
+  re-checked every rewritten path: 8 backup-only, 3 byte-identical copies, and 6 Dell-only newer files.
+  The guarded revert restored exactly those 6 live-file paths before migration. Mark then generated and
+  downloaded 4C's Option Extension Agreement with its dual-signature PDF section locally against Prod.
+  The Container App remains locked to Test. Evidence: `docs/cycle-5.1-validation.md`; H69 and its
+  implementation runbook moved to `Completed Handoffs/`.
 - **2026-09-12 - Cycle 5.1-early / Handoff 68 PASSED on Test.** Source PDFs and split PDF sections
   now use Blob-backed `azblob:` identifiers while preserving legacy local-path reads. The stale-path
   prerequisite was resolved, all **25 `TenantCRM_Test` rows** migrated with Blob/local hash checks and
