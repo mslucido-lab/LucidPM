@@ -1,4 +1,4 @@
-# H70 validation ? automatic schema-change logging
+# H70 validation — automatic schema-change logging
 
 Validated 2026-09-12.
 
