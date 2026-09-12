@@ -116,14 +116,26 @@ Blob any more for Prod than it could for Test.
    `PROD_DB_NAME` instead of `TEST_DB_NAME`, same error-message shape:
    `f"Refusing to migrate {actual!r}; this script is Prod-only ({PROD_DB_NAME!r})."` — the safety
    rail's *purpose* (refuse to run against the wrong database) stays identical, only which database
-   it accepts flips.
+   it accepts flips. Note this replacement text already drops the old script's "H68 is Test-only"
+   wording (line 158) — one of the three self-references point 5 finishes.
 3. `main()`'s `get_conn(TEST_DB_NAME)` → `get_conn(PROD_DB_NAME)`.
 4. `DEFAULT_MANIFEST` → a new filename, `h69_prod_source_pdf_blob_manifest.json` (the `--rollback-out`
    default already derives from `--manifest`'s stem, so it follows automatically as
    `h69_prod_source_pdf_blob_manifest.rollback.sql` — no separate change needed there).
-5. Docstring, print statements, CLI `--help` text, and `_write_rollback()`'s header comment: swap
-   "Test"/"TenantCRM_Test" for "Production"/"TenantCRM" throughout, so anyone reading the script's
-   output later has no ambiguity about which database it touched.
+5. **Replace every "Test"/"TenantCRM_Test"/"H68" reference that identifies this script with
+   "Production"/"TenantCRM"/"H69"** — docstring, print statements, CLI `--help` text, and any error or
+   header text the script emits. Confirmed by grepping the source: this is 3 exact spots, not a vague
+   "swap the wording" instruction —
+   - Line 135, `_write_rollback()`'s header comment: `"-- H68 rollback: review before running.
+     TenantCRM_Test only."` → `"-- H69 rollback: review before running. TenantCRM only."`
+   - Line 158, `_validate_test_database()`'s error message — already replaced by point 2 above (no
+     "H68" survives in the new text).
+   - Line 166, `_require_blob_writer()`'s error message: `"H68 migration requires both
+     LUCIDPM_BLOB_CONNECTION_STRING and LUCIDPM_BLOB_CONTAINER; it never uses
+     LUCIDPM_STORAGE_BACKEND."` → `"H69 migration requires both LUCIDPM_BLOB_CONNECTION_STRING and
+     LUCIDPM_BLOB_CONTAINER; it never uses LUCIDPM_STORAGE_BACKEND."`
+   After this step, `grep -n "H68\|TenantCRM_Test" db/data_updates/2026-09-12_h69_prod_source_pdf_blob_migration.py`
+   should return nothing — run that grep as the actual check, don't eyeball it.
 6. Everything else — the candidate query, the `Properties` join, the `Unlinked`/`Legacy` fallback, the
    manifest state machine, the per-row transaction with the optimistic `AND StoredFilePath=?` guard,
    the collision-safe Blob key construction — **stays byte-identical**. This is the point of the
@@ -218,6 +230,8 @@ as more than that.
 - [ ] New script diffed against `2026-09-11_h68_source_pdf_blob_migration.py`; only the 5 enumerated
       changes present (DB name import, guard function, `get_conn` target, manifest filename,
       Test→Prod text) — no incidental logic drift.
+- [ ] `grep -n "H68\|TenantCRM_Test" db/data_updates/2026-09-12_h69_prod_source_pdf_blob_migration.py`
+      returns nothing — no leftover self-references identifying the script as H68 or Test-only.
 - [ ] Dry run reviewed before `--commit`.
 - [ ] Manifest and rollback SQL written to the new `h69_prod_...` filenames — the Test manifest/
       rollback files are untouched (check their mtimes/contents didn't change).
