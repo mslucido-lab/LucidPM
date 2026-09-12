@@ -18,7 +18,6 @@ from LucidPM.pages.lease_documents_pdf import DEFAULT_DOCUMENT_ROOT
 # Page width constant — dynamic sidebar width + page_shell padding (32px each side = 64px)
 # Sidebar script updates --lucid-sidebar-width when resized.
 FULL_PAGE_WIDTH = "calc(100vw - var(--lucid-sidebar-width, 220px) - 64px)"
-USING_BLOB_STORAGE = is_blob_storage_backend()
 
 
 def responsive_card(*children, **props) -> rx.Component:
@@ -41,60 +40,65 @@ def responsive_card(*children, **props) -> rx.Component:
 
 def _storage_settings_card() -> rx.Component:
     """Render the storage setting appropriate to this deployment's backend."""
-    children: list[rx.Component] = [
-        rx.text("Lease document storage", size="4", weight="bold", color=BRAND_DARK),
-    ]
-    if USING_BLOB_STORAGE:
-        children.extend(
-            [
-                rx.text(
-                    "Source PDFs, split sections, and generated packages are stored in Azure Blob "
-                    "Storage. This deployment setting is not editable here.",
-                    size="2",
-                    color="#666",
-                ),
-                rx.vstack(
-                    rx.text("Storage backend", size="1", color="#666"),
-                    rx.text(storage_backend_label(), size="2", weight="bold", color=BRAND_DARK),
-                    spacing="1",
-                    width="100%",
-                ),
-            ]
-        )
-    else:
-        children.extend(
-            [
-                rx.text(
-                    "Root folder used for uploaded lease PDFs, split sections, and generated packages.",
-                    size="2",
-                    color="#666",
-                ),
-                rx.vstack(
-                    rx.text("Lease document storage root", size="1", color="#666"),
-                    rx.input(
-                        value=AdminSettingsState.storage_root,
-                        on_change=AdminSettingsState.set_storage_root,
-                        placeholder=DEFAULT_DOCUMENT_ROOT,
-                        width="100%",
-                    ),
-                    spacing="1",
-                    width="100%",
-                ),
-                rx.cond(
-                    AdminSettingsState.storage_root_changed,
-                    rx.callout.root(
-                        rx.callout.text(
-                            "Changing this path does not move existing files. Move existing files "
-                            "manually or old StoredFilePath references may break."
-                        ),
-                        color_scheme="orange",
-                        width="100%",
-                    ),
-                ),
-            ]
-        )
     return responsive_card(
-        rx.vstack(*children, spacing="3", width="100%", align_items="start"),
+        rx.vstack(
+            rx.text("Lease document storage", size="4", weight="bold", color=BRAND_DARK),
+            rx.cond(
+                AdminSettingsState.using_blob_storage,
+                rx.vstack(
+                    rx.text(
+                        "Source PDFs, split sections, and generated packages are stored in Azure Blob "
+                        "Storage. This deployment setting is not editable here.",
+                        size="2",
+                        color="#666",
+                    ),
+                    rx.vstack(
+                        rx.text("Storage backend", size="1", color="#666"),
+                        rx.text(AdminSettingsState.storage_location_label, size="2", weight="bold", color=BRAND_DARK),
+                        spacing="1",
+                        width="100%",
+                    ),
+                    spacing="3",
+                    width="100%",
+                    align_items="start",
+                ),
+                rx.vstack(
+                    rx.text(
+                        "Root folder used for uploaded lease PDFs, split sections, and generated packages.",
+                        size="2",
+                        color="#666",
+                    ),
+                    rx.vstack(
+                        rx.text("Lease document storage root", size="1", color="#666"),
+                        rx.input(
+                            value=AdminSettingsState.storage_root,
+                            on_change=AdminSettingsState.set_storage_root,
+                            placeholder=DEFAULT_DOCUMENT_ROOT,
+                            width="100%",
+                        ),
+                        spacing="1",
+                        width="100%",
+                    ),
+                    rx.cond(
+                        AdminSettingsState.storage_root_changed,
+                        rx.callout.root(
+                            rx.callout.text(
+                                "Changing this path does not move existing files. Move existing files "
+                                "manually or old StoredFilePath references may break."
+                            ),
+                            color_scheme="orange",
+                            width="100%",
+                        ),
+                    ),
+                    spacing="3",
+                    width="100%",
+                    align_items="start",
+                ),
+            ),
+            spacing="3",
+            width="100%",
+            align_items="start",
+        ),
         width="100%",
     )
 
@@ -130,6 +134,14 @@ class AdminSettingsState(AppState):
     @rx.var
     def storage_root_changed(self) -> bool:
         return str(self.storage_root or "").strip() != str(self.original_storage_root or "").strip()
+
+    @rx.var
+    def using_blob_storage(self) -> bool:
+        return is_blob_storage_backend()
+
+    @rx.var
+    def storage_location_label(self) -> str:
+        return storage_backend_label(self.storage_root)
 
     def on_load(self):
         self.form_error = ""

@@ -247,7 +247,6 @@ PROPERTY_GENERAL = "General / All Properties"
 # page_shell's content box is a flex child, so this page needs an explicit
 # viewport-relative width to avoid shrinking to the selected tab's contents.
 FULL_PAGE_WIDTH = "calc(100vw - var(--lucid-sidebar-width, 220px) - 64px)"
-USING_BLOB_STORAGE = is_blob_storage_backend()
 
 
 def _safe_int(value, default: int = 0) -> int:
@@ -442,6 +441,14 @@ class LeaseDocumentState(AppState):
     @rx.var
     def destination_preview(self) -> str:
         return template_folder(self.storage_root, self.f_property, self.f_document_category)
+
+    @rx.var
+    def using_blob_storage(self) -> bool:
+        return is_blob_storage_backend()
+
+    @rx.var
+    def storage_location_label(self) -> str:
+        return storage_backend_label(self.storage_root)
 
     @rx.var
     def has_source_document(self) -> bool:
@@ -3462,13 +3469,17 @@ def _tab_load() -> rx.Component:
                             rx.box(
                                 rx.hstack(
                                     rx.text("Files stored in:", size="1", color="#666"),
-                                    (
-                                        rx.text(storage_backend_label(), size="1", weight="bold", color=BRAND_DARK)
-                                        if USING_BLOB_STORAGE
-                                        else rx.text(LeaseDocumentState.storage_root, size="1", weight="bold", color=BRAND_DARK)
+                                    rx.cond(
+                                        LeaseDocumentState.using_blob_storage,
+                                        rx.text(LeaseDocumentState.storage_location_label, size="1", weight="bold", color=BRAND_DARK),
+                                        rx.text(LeaseDocumentState.storage_root, size="1", weight="bold", color=BRAND_DARK),
                                     ),
                                     rx.spacer(),
-                                    *([] if USING_BLOB_STORAGE else [rx.badge("Edit in Settings", color_scheme="gray", variant="soft")]),
+                                    rx.cond(
+                                        LeaseDocumentState.using_blob_storage,
+                                        rx.box(),
+                                        rx.badge("Edit in Settings", color_scheme="gray", variant="soft"),
+                                    ),
                                     width="100%",
                                     align="center",
                                 ),
