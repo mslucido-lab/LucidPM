@@ -66,11 +66,11 @@ import reflex as rx
 
 from LucidPM.state import AppState, run_query, run_exec, BRAND_DARK, BRAND_PRIMARY, api_base_url
 from LucidPM.components.sidebar import page_shell
+from LucidPM.document_storage import source_document_exists
 from LucidPM.pages.lease_documents_pdf import (
     DEFAULT_DOCUMENT_ROOT,
     merge_pdf_files,
     normalize_storage_root,
-    relative_to_root,
     render_text_to_pdf,
     render_text_sections_to_pdf,
     save_generated_package,
@@ -1253,7 +1253,7 @@ class LeasePackageBuilderState(AppState):
         """
         if str(getattr(section, "content", "") or "").strip():
             return True
-        if os.path.isfile(str(getattr(section, "file_path", "") or "")):
+        if source_document_exists(str(getattr(section, "file_path", "") or "")):
             return False
         return bool(self._section_heading_text(section))
 
@@ -1483,7 +1483,7 @@ class LeasePackageBuilderState(AppState):
 
         missing_sources = [
             p.section_name for p in selected
-            if not self._has_renderable_text(p) and not os.path.isfile(p.file_path)
+            if not self._has_renderable_text(p) and not source_document_exists(p.file_path)
         ]
         if missing_sources:
             self.form_error = _format_actionable_errors("Missing PDF files for these PDF-only sections:", missing_sources)
@@ -1739,7 +1739,7 @@ class LeasePackageBuilderState(AppState):
                         section_number += 1
                 else:
                     status = "PDF-only section"
-                    if not os.path.isfile(section.file_path):
+                    if not source_document_exists(section.file_path):
                         status += " - MISSING FILE"
                         all_unresolved.append(f"{label}: missing PDF file")
                     else:
@@ -2101,7 +2101,7 @@ class LeasePackageBuilderState(AppState):
                 else:
                     static_count += 1
                     file_path = str(row.get("StoredFilePath") or "")
-                    if not file_path or not os.path.isfile(file_path):
+                    if not file_path or not source_document_exists(file_path):
                         errors.append(f"{label}: missing PDF file")
                     lines.append(f"{idx}. {label} - Static PDF")
 
@@ -2254,7 +2254,7 @@ class LeasePackageBuilderState(AppState):
                 else:
                     flush_pending_text_sections()
                     file_path = str(row.get("StoredFilePath") or "")
-                    if not file_path or not os.path.isfile(file_path):
+                    if not file_path or not source_document_exists(file_path):
                         errors.append(f"{label}: missing PDF file")
                     else:
                         pdf_paths_to_merge.append(file_path)

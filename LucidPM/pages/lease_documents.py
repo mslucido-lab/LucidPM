@@ -232,12 +232,12 @@ import reflex as rx
 
 from LucidPM.state import AppState, run_query, run_exec, resolve_upload_filename, BRAND_DARK, BRAND_PRIMARY
 from LucidPM.components.sidebar import page_shell
+from LucidPM.document_storage import source_document_location
 from LucidPM.lease_merge import extract_tokens
 from LucidPM.pages.lease_documents_pdf import (
     DEFAULT_DOCUMENT_ROOT,
     copy_existing_pdf,
     page_count,
-    relative_to_root,
     save_uploaded_pdf,
     slugify,
     split_pdf_pages,
@@ -1245,8 +1245,7 @@ class LeaseDocumentState(AppState):
                 self.f_template_name,
             )
             pc = page_count(stored_path)
-            root = self.storage_root.strip() or DEFAULT_DOCUMENT_ROOT
-            rel = relative_to_root(stored_path, root)
+            root, rel = source_document_location(stored_path, self.storage_root)
             run_exec(
                 "INSERT INTO LeaseSourceDocuments "
                 "(LeaseID, PropertyID, TemplateName, DocumentScope, DocumentCategory, TemplateVersion, "
@@ -1296,8 +1295,7 @@ class LeaseDocumentState(AppState):
                 self.f_template_name,
             )
             pc = page_count(stored_path)
-            root = self.storage_root.strip() or DEFAULT_DOCUMENT_ROOT
-            rel = relative_to_root(stored_path, root)
+            root, rel = source_document_location(stored_path, self.storage_root)
             run_exec(
                 "INSERT INTO LeaseSourceDocuments "
                 "(LeaseID, PropertyID, TemplateName, DocumentScope, DocumentCategory, TemplateVersion, "
@@ -1844,7 +1842,10 @@ class LeaseDocumentState(AppState):
             root = self.storage_root.strip() or DEFAULT_DOCUMENT_ROOT
             if is_text_clause:
                 section_path = (str(self.selected_source_path or "").strip() or None) if has_source_document else None
-                rel = relative_to_root(section_path, root) if section_path else None
+                if section_path:
+                    root, rel = source_document_location(section_path, self.storage_root)
+                else:
+                    rel = None
             else:
                 output_name = (
                     f"source_{self.selected_source_document_id}_"
@@ -1855,7 +1856,7 @@ class LeaseDocumentState(AppState):
                     self.selected_source_path, start, end, output_name,
                     self.storage_root, self.f_property, self.f_document_category,
                 )
-                rel = relative_to_root(section_path, root)
+                root, rel = source_document_location(section_path, self.storage_root)
             run_exec(
                 "INSERT INTO LeaseDocumentSections "
                 "(LeaseSourceDocumentID, LeaseID, SectionType, SectionName, ExhibitCode, StartPage, EndPage, "

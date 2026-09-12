@@ -58,7 +58,6 @@ import datetime
 import io
 import os
 import re
-import shutil
 from typing import Iterable, Sequence
 
 from pypdf import PdfReader, PdfWriter
@@ -176,16 +175,20 @@ def save_uploaded_pdf(
     document_category: str,
     template_name: str = "",
 ) -> str:
-    folder = template_folder(storage_root, property_name, document_category)
-    ensure_folder(folder)
     filename = safe_pdf_filename(original_filename)
     stem, ext = os.path.splitext(filename)
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     prefix = slugify(template_name, "template")
-    target = os.path.join(folder, f"{prefix}_{slugify(stem)}_{stamp}{ext}")
-    with open(target, "wb") as f:
-        f.write(file_bytes)
-    return target
+    from LucidPM.document_storage import get_source_document_storage
+
+    return get_source_document_storage(storage_root).save_source(
+        property_name,
+        document_category,
+        f"{prefix}_{slugify(stem)}_{stamp}{ext}",
+        file_bytes,
+        kind="template",
+        collision="unique_name",
+    )
 
 
 def copy_existing_pdf(
@@ -196,19 +199,28 @@ def copy_existing_pdf(
     document_category: str,
     template_name: str = "",
 ) -> str:
-    folder = template_folder(storage_root, property_name, document_category)
-    ensure_folder(folder)
     filename = safe_pdf_filename(original_filename or os.path.basename(source_path))
     stem, ext = os.path.splitext(filename)
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     prefix = slugify(template_name, "template")
-    target = os.path.join(folder, f"{prefix}_{slugify(stem)}_{stamp}{ext}")
-    shutil.copyfile(source_path, target)
-    return target
+    from LucidPM.document_storage import get_source_document_storage
+
+    with open(source_path, "rb") as source:
+        data = source.read()
+    return get_source_document_storage(storage_root).save_source(
+        property_name,
+        document_category,
+        f"{prefix}_{slugify(stem)}_{stamp}{ext}",
+        data,
+        kind="template",
+        collision="unique_name",
+    )
 
 
 def page_count(path: str) -> int:
-    reader = PdfReader(path)
+    from LucidPM.document_storage import read_source_document
+
+    reader = PdfReader(io.BytesIO(read_source_document(path)))
     return len(reader.pages)
 
 
@@ -221,14 +233,14 @@ def split_pdf_pages(
     property_name: str,
     document_category: str,
 ) -> str:
-    folder = sections_folder(storage_root, property_name, document_category)
-    ensure_folder(folder)
     start = int(start_page)
     end = int(end_page)
     if start < 1 or end < 1 or end < start:
         raise ValueError("Invalid page range.")
 
-    reader = PdfReader(source_path)
+    from LucidPM.document_storage import get_source_document_storage, read_source_document
+
+    reader = PdfReader(io.BytesIO(read_source_document(source_path)))
     total = len(reader.pages)
     if start > total or end > total:
         raise ValueError(f"Page range must be between 1 and {total}.")
@@ -237,17 +249,16 @@ def split_pdf_pages(
     for page_index in range(start - 1, end):
         writer.add_page(reader.pages[page_index])
 
-    filename = safe_pdf_filename(output_name)
-    target = os.path.join(folder, filename)
-    counter = 2
-    stem, ext = os.path.splitext(target)
-    while os.path.exists(target):
-        target = f"{stem}_{counter}{ext}"
-        counter += 1
-
-    with open(target, "wb") as f:
-        writer.write(f)
-    return target
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return get_source_document_storage(storage_root).save_source(
+        property_name,
+        document_category,
+        safe_pdf_filename(output_name),
+        buffer.getvalue(),
+        kind="section",
+        collision="retry_suffix",
+    )
 
 
 
@@ -1173,8 +1184,10 @@ def render_text_sections_to_pdf(section_texts: Sequence[str], output_path: str) 
 
 def merge_pdf_files(section_paths: Iterable[str]) -> tuple[bytes, int]:
     """Merge PDF sections and return validated PDF bytes and page count."""
+    from LucidPM.document_storage import read_source_document, source_document_exists
+
     paths = list(section_paths or [])
-    missing = [p for p in paths if not p or not os.path.isfile(p)]
+    missing = [p for p in paths if not p or not source_document_exists(p)]
     if missing:
         raise ValueError(f"Missing section file(s): {missing}")
     if not paths:
@@ -1182,7 +1195,7 @@ def merge_pdf_files(section_paths: Iterable[str]) -> tuple[bytes, int]:
 
     writer = PdfWriter()
     for path in paths:
-        reader = PdfReader(path)
+        reader = PdfReader(io.BytesIO(read_source_document(path)))
         for page in reader.pages:
             writer.add_page(page)
 
