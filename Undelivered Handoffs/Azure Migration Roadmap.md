@@ -21,11 +21,11 @@ local production setup until the cloud version is proven.
 | 1 — Azure foundation | Subscription, resource group, SQL server, free DB confirmed at ~$0 | 2 | **G1: free tier real?** |
 | 2 — App vs Azure SQL | LucidPM runs locally against Azure SQL, core workflows validated | 2–3 | **✅ G2 PASSED 2026-09-10** |
 | 3 — Containerize + deploy | LucidPM live on a temp `*.azurecontainerapps.io` URL, scaling to zero | 3–5 | **✅ Gate 3 PASSED 2026-09-11** |
-| 4 — Blob storage | One lease PDF survives a container restart — **POC COMPLETE** | 2 | **🟡 Cycle 4.2 deployed 2026-09-11; restart-survival proof outstanding — see note** |
+| 4 — Blob storage | One lease PDF survives a container restart — **POC COMPLETE** | 2 | **✅ Gate 4 PASSED 2026-09-11 — POC COMPLETE** |
 | 5 — LucidPM production | Real data migrated, auth, custom subdomain, cutover | 6–8 | — |
 | 6 — Portfolio Manager | Second Container App, cross-DB refactor, its own subdomain | 8–12 (soft) | — |
 
-**To POC complete (Stages 0–4): 11–15 cycles.**
+**To POC complete (Stages 0–4): 11–15 cycles — ✅ DONE 2026-09-11** (see progress log for Gate 4).
 **LucidPM fully in production (through Stage 5): 17–23 cycles.**
 **Both apps done (through Stage 6): 25–35 cycles.**
 
@@ -36,6 +36,33 @@ everything ≈ 6–12 months.
 
 ## Progress log
 
+- **2026-09-11 — Cycle 4.2 / GATE 4 PASSED — POC COMPLETE.** Completed the restart-survival proof left
+  outstanding in the entry below: scaled `lucidpm` to zero (`az containerapp update --min-replicas 0`),
+  confirmed `replica list` empty, reopened the app from cold, and re-downloaded the same text-only
+  package generated before the scale-down — **it downloaded correctly**, proving Blob storage is what
+  makes generated documents durable across Container Apps restarts. Two things came out of the
+  restart cycle itself, worth recording as real operational characteristics, not regressions:
+  - **Scale-to-zero took longer than the configured cooldown at first**, traced to two still-open
+    browser tabs holding live WebSocket connections — Container Apps' concurrency-based scaler counts
+    an idle-but-open WS connection as active even though it generates no new entries in the `Requests`
+    metric (confirmed via Log Analytics: `Requests` = 0 for 17+ minutes while the replica stayed up).
+    Once genuinely closed, it scaled down within the configured 5-minute cooldown as expected.
+  - **A real Caddy/Reflex startup race on cold start**, confirmed directly in the container's own
+    console logs: Caddy started accepting connections before the Reflex backend's ASGI server was
+    actually ready (backend printed its "running" banner ~2s after Caddy, but was still loading page
+    modules for ~2 more seconds after that) — the first WebSocket upgrade attempt landed in that gap
+    and got a clean 502 (`dial tcp 127.0.0.1:8000: connect: connection refused`) from Caddy's
+    reverse_proxy. **`entrypoint.sh` (Handoff 64) has no "wait for backend ready" handshake between
+    starting the two processes** — worth a small hardening fix later (have Caddy wait for a successful
+    local health check before serving, or accept/queue rather than fail during that window), not
+    blocking since a retry recovers. Observed end-to-end cold-start timeline (container had been idle
+    long enough that `TenantCRM_Test` had likely also auto-paused): first attempt failed at ~55s,
+    second at ~75s, succeeded at ~85s — consistent with the container-startup race resolving quickly
+    but a concurrent SQL serverless resume (Cycle 2.2 measured 20-80s on its own) also being in play.
+  Full record: `docs/cycle-4.2-validation.md`. **This closes Stages 0-4 — the POC is complete.**
+  Everything past this point (Stage 5) touches production data and is a larger commitment; Mark
+  decides when to start it. H68 (source-PDF/section Blob migration, see below) is separately tracked,
+  not a Gate 4 blocker.
 - **2026-09-11 — Cycle 4.2 deployed; Gate 4's restart-survival proof still outstanding — Handoff 68
   written for a separate new finding.** H67's changes deployed successfully: Container App revision
   `0000002` healthy, running `ghcr.io/mslucido-lab/lucidpm:0.2.0`, Blob storage enabled for generated
