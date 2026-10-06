@@ -275,8 +275,8 @@ Verification queries (put them in the script as a commented block):
 SELECT COUNT(*) FROM dbo.Leases l
 LEFT JOIN dbo.LeaseSuites ls ON ls.LeaseID = l.LeaseID AND ls.IsPrimary = 1
 WHERE l.SuiteID IS NOT NULL AND (ls.SuiteID IS NULL OR ls.SuiteID <> l.SuiteID);
--- Expect 0: allocations sum to 100
-SELECT LeaseID FROM dbo.LeaseSuites GROUP BY LeaseID HAVING ABS(SUM(RentAllocationPct) - 100) > 0.01;
+-- Expect no rows: allocations sum to exactly 100 (DECIMAL(9,6) sums are exact; matches validate_lease_suites)
+SELECT LeaseID FROM dbo.LeaseSuites GROUP BY LeaseID HAVING SUM(RentAllocationPct) <> 100;
 ```
 
 Afterwards, regenerate `db/baseline_schema.sql` with `db/generate_baseline_schema.py`. Add a
@@ -986,7 +986,8 @@ today, Tax and Bank), the Rent Roll PDF, the Dashboard tiles, the Proforma for e
 (current year, both bases), and the Leases Expiring list.
 
 Phase 1
-- [ ] Script runs twice on Azure `TenantCRM_Test` without error (idempotent). Both verification queries return 0.
+- [ ] Script runs twice on Azure `TenantCRM_Test` without error (idempotent). All three verification queries
+      pass: the first returns a count of 0, and the second and third return no rows.
 - [ ] The deployed app (still `0.4.3`) works normally against Test after the script ran. Open a tenant's leases and the Rent Roll.
 - [ ] Row count in `LeaseSuites` = count of leases with non-null `SuiteID`.
 - [ ] Edit an existing single-suite lease and save without changes. Its `LeaseSuites` row is unchanged (100%, primary).
