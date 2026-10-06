@@ -490,3 +490,42 @@ CLAUDE.md — Cycle 4.2 / H69 progress-log entries                             �
                                                                                   sessions that
                                                                                   produced the 6 rows
 ```
+
+---
+
+## Status: DONE, verified 2026-09-12
+
+Implemented across `129d542` (blob-aware storage UI), `b24ee08` (runtime-state fix, below),
+`23e928e` (validation doc). Evidence: `docs/h71-validation.md`.
+
+**Part A shipped with one real design bug this handoff didn't anticipate, caught during deployment
+and fixed same day.** This handoff's Fix section specified `USING_BLOB_STORAGE =
+is_blob_storage_backend()` as a **module-level Python constant**, reasoning that a deployment-time
+env var doesn't need `rx.cond`/State the way per-request data does. That reasoning missed a Reflex
+build-pipeline detail the project had already learned once before (Handoff 64, `REFLEX_API_URL`):
+Reflex compiles the browser bundle at `reflex export`/Docker-build time, **before** the Container
+App's runtime environment variables exist. A module-level `os.getenv()` check gets baked in with
+whatever value (or absence of one) was present during `docker build`, not the value
+`az containerapp update`/`secretref:` injects at runtime — so the deployed UI never reacted to the
+real backend at all. Fixed in `b24ee08` by moving both checks into Reflex State: `@rx.var
+using_blob_storage` / `@rx.var storage_location_label` on `AdminSettingsState` and
+`LeaseDocumentState`, branched with `rx.cond()` in the component tree instead of a Python
+`if`/ternary on a module constant. Recorded in CLAUDE.md's Watch-fors as a general rule: any
+deployment-environment-dependent branch in page code must be State, not a module-level constant,
+even when it "obviously" can't change within one `reflex run` process's lifetime — that intuition is
+true for local dev and false for what actually ends up in the exported frontend bundle.
+
+**Separately, the first rebuild omitted `REFLEX_API_URL`.** Revision `lucidpm--0000006` fixed the
+State bug but was built without re-supplying the `REFLEX_API_URL` build ARG (Handoff 64/65's
+existing requirement — not new to this handoff, but this handoff's deploy step didn't call it out
+explicitly, and it was dropped on the rebuild). Package downloads briefly targeted `localhost` as a
+result. Revision `lucidpm--0000007` (image `0.4.2`), built with
+`REFLEX_API_URL=https://lucidpm.icyocean-a1d9520f.westus3.azurecontainerapps.io`, fixed it and was
+the version Mark verified.
+
+**Part B ran exactly as designed** — dry run found the same 6 parent / 24 child rows this handoff's
+Current State table lists, manifest + rollback SQL were written first
+(`db/data_updates/h71_prod_package_cleanup_manifest.json` /
+`.rollback.sql`, both gitignored, retained locally), and `--commit` deleted exactly those counts in
+one transaction (`LeaseGeneratedDocuments` 150→144, `LeasePackageSections` 2,591→2,567). No
+deviations.
