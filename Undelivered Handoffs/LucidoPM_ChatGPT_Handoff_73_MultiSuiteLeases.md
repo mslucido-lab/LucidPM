@@ -253,7 +253,7 @@ BEGIN
             REFERENCES dbo.Leases (LeaseID) ON DELETE CASCADE,
         CONSTRAINT FK_LeaseSuites_PropertySuites FOREIGN KEY (SuiteID)
             REFERENCES dbo.PropertySuites (SuiteID),
-        CONSTRAINT CK_LeaseSuites_Pct CHECK (RentAllocationPct >= 0 AND RentAllocationPct <= 100)
+        CONSTRAINT CK_LeaseSuites_Pct CHECK (RentAllocationPct > 0 AND RentAllocationPct <= 100)
     );
     CREATE UNIQUE INDEX UX_LeaseSuites_Lease_Suite ON dbo.LeaseSuites (LeaseID, SuiteID);
     CREATE UNIQUE INDEX UX_LeaseSuites_OnePrimary ON dbo.LeaseSuites (LeaseID) WHERE IsPrimary = 1;
@@ -285,7 +285,8 @@ row to `db/history/CHANGELOG.md`, and add `LeaseSuites` to `docs/Database.md`.
 #### 1b. New module `LucidPM/lease_suites.py`
 
 This module is the **only** place suite↔lease matching and labeling logic lives.
-Pure functions plus two DB helpers. No Reflex imports.
+Pure functions, one read helper (`load_lease_suites`), and the single validated write
+path (`transaction` + `replace_lease_suites`). No Reflex imports.
 
 ```python
 """
@@ -311,7 +312,8 @@ _BATCH = 100
 
 def load_lease_suites(lease_ids, db: str) -> dict[int, list[dict]]:
     """LeaseID -> [{SuiteID, SuiteLabel, SquareFeet, SortOrder, IsPrimary,
-    RentAllocationPct, PropertyID}] ordered primary first, then SortOrder, SuiteLabel."""
+    RentAllocationPct, PropertyID, IsActive, UnderwritingRent, SuitePremisesDescription,
+    SuiteLegalDescription}] ordered primary first, then SortOrder, SuiteLabel."""
     ids = sorted({int(i) for i in lease_ids if i is not None})
     out: dict[int, list[dict]] = {}
     for i in range(0, len(ids), _BATCH):
@@ -319,7 +321,7 @@ def load_lease_suites(lease_ids, db: str) -> dict[int, list[dict]]:
         ph = ",".join(["?"] * len(batch))
         rows = run_query(
             "SELECT ls.LeaseID, ls.SuiteID, ls.IsPrimary, ls.RentAllocationPct, "
-            "ps.SuiteLabel, ps.SquareFeet, ps.SortOrder, ps.PropertyID, "
+            "ps.SuiteLabel, ps.SquareFeet, ps.SortOrder, ps.PropertyID, ps.IsActive, ps.UnderwritingRent, "
             "ISNULL(ps.SuitePremisesDescription,'') AS SuitePremisesDescription, "
             "ISNULL(ps.SuiteLegalDescription,'') AS SuiteLegalDescription "
             "FROM LeaseSuites ls INNER JOIN PropertySuites ps ON ps.SuiteID = ls.SuiteID "
@@ -443,34 +445,96 @@ def _s(v) -> str:
     return str(v or "").strip()
 
 
-def save_lease_suites(lease_id: int, rows: list[tuple[int, bool, Decimal]], db: str) -> None:
-    """Replace a lease's LeaseSuites rows and sync Leases.SuiteID in ONE transaction.
-    rows = [(SuiteID, IsPrimary, RentAllocationPct)]. Empty rows -> lease has no suite."""
+class LeaseSuitesError(ValueError):
+    """A LeaseSuites write violated an invariant. Message is user-facing."""
+
+
+@contextmanager
+def transaction(db: str):
+    """One connection, one transaction: commit on success, rollback on any error.
+    Yields a cursor. state.get_conn leaves pyodbc's default autocommit=False
+    (verified 2026-10-05), so this is a real single transaction."""
     conn = get_conn(db)
     try:
         cur = conn.cursor()
-        cur.execute("DELETE FROM LeaseSuites WHERE LeaseID = ?", (lease_id,))
-        primary = None
-        for suite_id, is_primary, pct in rows:
-            cur.execute(
-                "INSERT INTO LeaseSuites (LeaseID, SuiteID, IsPrimary, RentAllocationPct) "
-                "VALUES (?, ?, ?, ?)",
-                (lease_id, suite_id, 1 if is_primary else 0, pct),
-            )
-            if is_primary:
-                primary = suite_id
-        cur.execute("UPDATE Leases SET SuiteID = ? WHERE LeaseID = ?", (primary, lease_id))
+        yield cur
         conn.commit()
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
+
+
+def validate_lease_suites(cur, property_id: int, rows: list[tuple[int, bool, Decimal]]) -> None:
+    """THE invariant check for LeaseSuites. Every write goes through
+    replace_lease_suites, which calls this first. Raises LeaseSuitesError.
+      - empty rows is allowed (lease has no suite)
+      - otherwise exactly one primary, no duplicate suites
+      - every pct > 0 and the pcts sum to exactly 100 (Decimal, no tolerance;
+        pcts_from_amounts guarantees this)
+      - every suite belongs to property_id (the lease's property)"""
+    if not rows:
+        return
+    ids = [int(s) for s, _, _ in rows]
+    if len(set(ids)) != len(ids):
+        raise LeaseSuitesError("A suite is listed twice on this lease.")
+    if sum(1 for _, p, _ in rows if p) != 1:
+        raise LeaseSuitesError("A lease with suites must have exactly one primary suite.")
+    pcts = [Decimal(str(p)) for _, _, p in rows]
+    if any(p <= 0 for p in pcts) or sum(pcts) != Decimal(100):
+        raise LeaseSuitesError("Suite rent shares must each be above 0 and total exactly 100%.")
+    ph = ",".join(["?"] * len(ids))
+    cur.execute(f"SELECT SuiteID, PropertyID FROM PropertySuites WHERE SuiteID IN ({ph})", ids)
+    found = {int(r[0]): int(r[1]) for r in cur.fetchall()}
+    if set(found) != set(ids) or any(pid != int(property_id) for pid in found.values()):
+        raise LeaseSuitesError("All suites on a lease must belong to the lease's property.")
+
+
+def replace_lease_suites(cur, lease_id: int, property_id: int,
+                         rows: list[tuple[int, bool, Decimal]]) -> None:
+    """Replace a lease's LeaseSuites rows and set Leases.SuiteID to the primary,
+    on the CALLER's cursor/transaction (see tenants.save_lease).
+    rows = [(SuiteID, IsPrimary, RentAllocationPct)], primary first. [] = no suite."""
+    validate_lease_suites(cur, property_id, rows)
+    cur.execute("DELETE FROM LeaseSuites WHERE LeaseID = ?", (lease_id,))
+    primary = None
+    for suite_id, is_primary, pct in rows:
+        cur.execute(
+            "INSERT INTO LeaseSuites (LeaseID, SuiteID, IsPrimary, RentAllocationPct) "
+            "VALUES (?, ?, ?, ?)",
+            (lease_id, suite_id, 1 if is_primary else 0, pct),
+        )
+        if is_primary:
+            primary = suite_id
+    cur.execute("UPDATE Leases SET SuiteID = ? WHERE LeaseID = ?", (primary, lease_id))
 ```
 
-> `state.get_conn` leaves pyodbc's default `autocommit=False` (verified
-> 2026-10-05; `run_exec` commits explicitly), so the commit/rollback above is a
-> real single transaction. Do not change `get_conn`.
+(Add `from contextlib import contextmanager` to the module imports.)
+
+**Where the invariants are enforced (decided 2026-10-06, Codex Q2/Q3/Q6):**
+
+| Rule | Enforced by |
+|---|---|
+| At most one primary per lease | DB: filtered unique index `UX_LeaseSuites_OnePrimary` |
+| No duplicate suite per lease | DB: `UX_LeaseSuites_Lease_Suite` |
+| Each share > 0 and ≤ 100 | DB: `CK_LeaseSuites_Pct` (zero shares are **not** allowed. A suite on a lease always carries rent. Relax later if a "free storage suite" case ever comes up) |
+| Exactly one primary when non-empty; shares total 100; all suites in the lease's property; `Leases.SuiteID` = primary | **App**: `validate_lease_suites` inside `replace_lease_suites`, the **only** write path, inside the caller's transaction |
+
+These cross-row rules are deliberately not in the database: they would need triggers.
+LucidPM is the only writer, and every write goes through one validated function in one
+transaction. Codex must not add any other code that writes to `LeaseSuites`. Manual SQL
+edits are outside this guarantee. The two verification queries in 1a are the audit for
+them; add this third query to that block:
+
+```sql
+-- Expect 0: lease-suite links across properties, or non-empty leases without exactly one primary
+SELECT ls.LeaseID FROM dbo.LeaseSuites ls JOIN dbo.Leases l ON l.LeaseID = ls.LeaseID
+JOIN dbo.PropertySuites ps ON ps.SuiteID = ls.SuiteID
+GROUP BY ls.LeaseID
+HAVING SUM(CASE WHEN ps.PropertyID <> l.PropertyID THEN 1 ELSE 0 END) > 0
+    OR SUM(CAST(ls.IsPrimary AS INT)) <> 1;
+```
 
 #### 1c. `pages/tenants.py` — lease form
 
@@ -519,6 +583,22 @@ Row 2b: Monthly rent ($)   Deposit ($)
 - `_load_suite_options` (890–903): also SELECT `SquareFeet` and fill `suite_sqft`.
   Drop the `"(No suite)"` sentinel from the options used by this control. Zero checked
   means no suite.
+- **Inactive suites already on the lease (decided 2026-10-06, Codex Q4).** Options =
+  the property's **active** suites **plus** any suite currently linked to the lease being
+  edited, even if inactive. Use `LeaseSuites` rows, or `Leases.SuiteID` for legacy leases.
+  Inactive ones show as `"<label> (inactive)"` in the popover and stay checked. Mark
+  can uncheck them, but no other inactive suite can be checked. The display text differs;
+  the key stays the plain `SuiteLabel`, which is unique per property (`UX_PropertySuites_PropertyID_SuiteLabel`).
+  So **reopening and re-saving a lease never drops a saved suite**, which matters once Walnut's
+  combined `1 & 2`-style suites are deactivated with historical leases still pointing at them.
+  The `replace_lease_suites` property check is unaffected: inactive suites still belong
+  to the property.
+  *This also fixes a latent bug in today's form.* `select_lease` sets `l_suite` to the
+  saved label, but `save_lease` only resolves it if it is in the active-only
+  `suite_names`, so re-saving a lease on an inactive suite sets `SuiteID` to NULL.
+  (No current lease is on an inactive suite, verified 2026-10-06 in both DBs, so no
+  existing data was affected.)
+- The "new lease" path (`new_lease`, ~3106) loads active suites only, as today.
 - **Suite(s) control (replaces the `rx.select` at 4416–4426).** An `rx.popover.root`.
   The trigger is styled like the neighbouring `rx.select` (same height, border, chevron) and
   shows the checked labels joined with ", ", or "(No suite)" when none are checked. The
@@ -567,15 +647,27 @@ set `l_suites = [that label]`.
      terminated lease ends on its `LeaseTerminationDate`. This is the normal case for an expansion into a suite
      whose month-to-month tenant hasn't had an end date entered yet. The
      message tells Mark which lease to close out. It must not block the save.
-2. Keep the existing `UPDATE` / `INSERT` exactly as written. They still write `SuiteID`
-   (the primary), which keeps the legacy column in sync for the moment between statements.
-3. Immediately after the `UPDATE` (edit) or after resolving `new_id` (insert),
-   call `save_lease_suites(lease_id, rows, self.db)`. `rows` is primary first,
-   then extras in `SortOrder`. For a single suite that is `[(primary, True, 100)]`, and
-   for no suite it is `[]`. **Note:** the insert branch resolves `new_id` only inside
-   `if id_rows and lease_start:`. Restructure so `new_id` is resolved whenever
-   `id_rows` is non-empty, and call `save_lease_suites` there. Leave the rent-schedule
-   insert's `lease_start` condition unchanged.
+2. **All of the save's writes happen in ONE transaction** (decided 2026-10-06, Codex Q1).
+   Today `save_lease` makes 2–3 separate `run_exec` calls, each committing on its own.
+   Replace them with a single `with transaction(self.db) as cur:` block containing, in order:
+   - **Edit:** the existing `UPDATE Leases …` (same columns and params as today, including
+     `SuiteID` = primary), then the existing Base `LeaseRentSchedule` sync `UPDATE`, then
+     `replace_lease_suites(cur, self.selected_lease_id, prop_id, rows)`.
+   - **Insert:** the existing `INSERT INTO Leases …` with **`OUTPUT INSERTED.LeaseID`**
+     added before `VALUES`, read with `cur.fetchone()[0]`. This replaces the separate
+     `SELECT TOP 1 LeaseID … ORDER BY LeaseID DESC` lookup, which is not reliable under
+     concurrency. (Verified 2026-10-06: no triggers on `Leases` or `LeaseRentSchedule`
+     in either DB, so a bare `OUTPUT` is allowed.) Then, if `lease_start`, the existing
+     Base rent-schedule `INSERT` with the new ID. Then `replace_lease_suites(cur, new_id, prop_id, rows)`.
+   - Statement text and parameters are otherwise unchanged. Only the connection handling changes.
+   - Catch `LeaseSuitesError` → `self.lease_form_error = str(e)` and return. Nothing is
+     written, because the transaction rolled back. Let other exceptions propagate as today.
+   - The success message, `_load_rent_schedule`, `new_lease()`, and `load_leases()` run
+     **after** the `with` block, only on success.
+3. `rows` is primary first, then the rest in `SortOrder`. For a single suite it is
+   `[(primary_id, True, Decimal(100))]`, and for no suite it is `[]`.
+4. `save_lease` is the only caller of `replace_lease_suites`. Lease delete needs nothing,
+   because `ON DELETE CASCADE` removes the rows.
 
 **`load_leases` (3004–3040):** the lease list shows `suite_label`. Use
 `report_label` of all the lease's suites. Call `load_lease_suites` for the loaded
@@ -843,7 +935,9 @@ Then, with the single-suite values identical to today:
   suite has a `SuiteAddressOverride`, **ignore it when multi** (an override names one
   suite) and note this in a code comment. In the bare-label branch, use `"Suites"`
   instead of `"Suite"` when multi.
-- `UnderwritingRent` → sum across suites when multi.
+- `UnderwritingRent` → when multi, the sum of `r["UnderwritingRent"]` across `ls_rows`
+  (`load_lease_suites` returns it from Phase 1; NULLs count as 0; if every one is NULL,
+  emit the same empty value a single suite with NULL produces today).
 - **New tokens:** `SuiteWord` (`"Suite"` / `"Suites"`) and `SuiteCount`. No current Prod template
   hard-codes "Suite {{Suite…", so nothing breaks without them. They are for future templates.
   Add them to the picker in `_available_token_buttons_panel` (`pages/lease_documents.py`),
@@ -913,6 +1007,19 @@ Phase 1
       Uncheck it again: the total is kept and Monthly rent is editable again.
 - [ ] Dropdown trigger matches the neighbouring selects visually, and long suite lists scroll inside the popover.
 - [ ] Remove all suites and save. Zero rows, `Leases.SuiteID` NULL.
+- [ ] **One transaction:** force `replace_lease_suites` to fail (Test only, e.g. temporarily
+      pass a suite from another property). The form shows the error, and **neither** `Leases` (rent,
+      dates, `SuiteID`) **nor** the Base rent-schedule row nor `LeaseSuites` changed. Repeat for
+      a *new* lease: no `Leases` row was created.
+- [ ] New lease: the ID comes from `OUTPUT INSERTED.LeaseID`, and the lease's `LeaseSuites` rows point at it.
+- [ ] `validate_lease_suites` unit checks (plain Python with a stub cursor is fine): duplicate suite,
+      zero primaries, two primaries, a 0% share, shares summing to 99.999999, and a suite from another
+      property are each rejected with a `LeaseSuitesError`. `[]` is accepted.
+- [ ] DB check: inserting a `RentAllocationPct` of 0 directly fails (`CK_LeaseSuites_Pct`).
+- [ ] The third audit query in 1a returns 0 rows after the backfill.
+- [ ] **Inactive suite:** on Test, deactivate the suite of an existing lease, then reopen that lease.
+      The suite shows checked as "… (inactive)". Save without changes: `LeaseSuites` and `Leases.SuiteID`
+      are unchanged. Other inactive suites are not offered. Reactivate the suite afterwards.
 - [ ] Overlap warning appears when a chosen suite is on another live lease with overlapping dates.
 - [ ] Delete the test lease. `LeaseSuites` rows are gone (cascade).
 - [ ] Suites admin: deleting a suite used only as a non-primary suite is blocked.
@@ -921,7 +1028,8 @@ Phase 1
 Phase 4 (delivered second, right after Phase 1)
 - [ ] Generate a package for the worked-example lease. `{{SuiteLabel}}`, `{{SuiteFullAddress}}`,
       `{{SuiteLegalDescription}}`, and `{{SuiteSquareFeet}}` match the expected output in 4a exactly.
-      Rent tokens = $2,275.00. `{{SuiteWord}}` = "Suites".
+      Rent tokens = $2,275.00. `{{SuiteWord}}` = "Suites". `{{UnderwritingRent}}` = the sum of both
+      suites' values (both are NULL in Prod today, so it renders as it does for a NULL single suite).
 - [ ] Generate a package for a single-suite lease. The output is byte-identical to one generated before this phase.
 - [ ] `combine_descriptions` fallback: with mismatched legal-description tails (Test data only),
       the output is the full texts joined with "; and ".
