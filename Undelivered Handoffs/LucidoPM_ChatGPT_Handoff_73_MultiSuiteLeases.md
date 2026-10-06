@@ -224,8 +224,13 @@ def effective_end(lease: dict) -> datetime.date | None:
 Idempotent. Run on Azure `TenantCRM_Test` → verify → Azure `TenantCRM`. Use SSMS or
 `sqlcmd` connected to `lucidpm-sql-24899.database.windows.net`, as the admin login, because
 the app's `lucidpm_app` user has only `db_datareader`/`db_datawriter` and cannot run DDL.
-**Mark runs the `TenantCRM` (Prod) run.** The H70 DDL trigger is installed on both Azure DBs
-and logs the change automatically.
+**Codex writes the script; Mark runs it on both databases** (Codex has no admin login).
+Codex stops after writing it and asks Mark to run it on `TenantCRM_Test`, then continues
+Phase 1 against Test. Mark runs `TenantCRM` at the ship gate. The H70 DDL trigger is
+installed on both Azure DBs and logs the change automatically.
+
+**Codex must stage only the files this handoff changes** (`git add <paths>`, never `git add -A` / `.`).
+The working tree has unrelated uncommitted changes from Mark.
 
 ```sql
 -- Multi-suite leases (Handoff 73). One row per suite a lease covers.
