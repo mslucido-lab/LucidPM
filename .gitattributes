@@ -1,0 +1,6 @@
+# Files copied into the Linux container image must keep LF line endings,
+# regardless of core.autocrlf on the Windows dev machine. A CRLF entrypoint.sh
+# breaks container startup.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+Caddyfile   text eol=lf
