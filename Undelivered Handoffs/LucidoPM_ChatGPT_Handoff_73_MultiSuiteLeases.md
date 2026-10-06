@@ -178,11 +178,26 @@ until Phase 2's termination fix, the Rent Roll from 11/1 will most likely still 
 correct for #200. This is known and accepted. Phases 2 and 3 close it, so Phase 2
 should follow Phase 4 promptly.
 
-**Deployment order.** The Phase 1 code queries `dbo.LeaseSuites`. Apply the 014 script
-to **all four databases** (local Test, local Prod, Azure Test, Azure Prod) **before**
-running Phase 1 code against any of them. The app's Test/Prod toggle can reach any of
-them, and a missing table breaks the lease form. Then rebuild and deploy the Container App
-image, following the existing `docs/Deployment.md` steps.
+**Environment (confirmed by Mark 2026-10-05): Azure SQL is the only database.** The
+local SQL Server copies are retired. Local development (`reflex run` on Mark's PC, `.env`)
+and the deployed Container App connect to the **same** Azure SQL server
+(`lucidpm-sql-24899`), databases `TenantCRM_Test` and `TenantCRM`. As a result:
+- "Testing locally" means local **code** against the **Azure `TenantCRM_Test`** database.
+  Keep the app toggled to Test throughout development. Never point unreleased code at `TenantCRM`.
+- A schema change is live for the deployed app the moment the script runs. The 014 script
+  is purely additive (new table + backfill; no existing column changes), so the currently
+  deployed image (`0.4.3`) is unaffected by it.
+- Data entered through either the local or the deployed app lands in the same place.
+
+**Deployment order.** The Phase 1 code queries `dbo.LeaseSuites`, so the table must exist
+in a database before Phase 1 code runs against it:
+1. Run the 014 script on Azure `TenantCRM_Test` before Codex starts Phase 1 testing.
+2. Develop and verify P1 + P4 locally against Azure Test.
+3. Mark runs the 014 script on Azure `TenantCRM`.
+4. Release image `0.5.0` to the Container App (see "Release to Azure" under How to Deliver).
+   Until then, `lucidpm.lucidoproperties.net` keeps running `0.4.3`.
+
+Steps 3–4 repeat (without the script) for the P2 and P3 releases.
 
 **Shared rule: a lease's effective end.** Phases 1, 2 and 3 all use this rule, so put it
 in `lease_suites.py` (Phase 1). It is the same rule `proforma._build_segments`
@@ -206,8 +221,11 @@ def effective_end(lease: dict) -> datetime.date | None:
 
 #### 1a. Schema script `db/history/014_2026-10-05_<HHMM>_lease_suites.sql`
 
-Idempotent. Run on local `TenantCRM_Test` → verify → local `TenantCRM` → Azure
-`TenantCRM_Test` → Azure `TenantCRM`. **Mark runs the Prod and Azure runs.**
+Idempotent. Run on Azure `TenantCRM_Test` → verify → Azure `TenantCRM`. Use SSMS or
+`sqlcmd` connected to `lucidpm-sql-24899.database.windows.net`, as the admin login, because
+the app's `lucidpm_app` user has only `db_datareader`/`db_datawriter` and cannot run DDL.
+**Mark runs the `TenantCRM` (Prod) run.** The H70 DDL trigger is installed on both Azure DBs
+and logs the change automatically.
 
 ```sql
 -- Multi-suite leases (Handoff 73). One row per suite a lease covers.
@@ -860,14 +878,17 @@ Lease picker labels (554–591) and the selected-lease suite label (669–701): 
 
 ## Validation Checklist
 
-Run on **local `TenantCRM_Test`** unless stated.
+Run with the **local app (`reflex run`) toggled to Test, i.e. Azure `TenantCRM_Test`**,
+unless stated otherwise. The worked-example setup edits Test data only. Never edit
+Dallas Pro or Orbit in `TenantCRM`.
 
 **Before any code change:** save a baseline. Capture the Rent Roll rows (All properties,
 today, Tax and Bank), the Rent Roll PDF, the Dashboard tiles, the Proforma for each property
 (current year, both bases), and the Leases Expiring list.
 
 Phase 1
-- [ ] Script runs twice without error (idempotent). Both verification queries return 0.
+- [ ] Script runs twice on Azure `TenantCRM_Test` without error (idempotent). Both verification queries return 0.
+- [ ] The deployed app (still `0.4.3`) works normally against Test after the script ran. Open a tenant's leases and the Rent Roll.
 - [ ] Row count in `LeaseSuites` = count of leases with non-null `SuiteID`.
 - [ ] Edit an existing single-suite lease and save without changes. Its `LeaseSuites` row is unchanged (100%, primary).
 - [ ] **Worked example on Test.** First mirror the Prod setup on Test: Dallas Pro's current
@@ -901,8 +922,9 @@ Phase 4 (delivered second, right after Phase 1)
       the output is the full texts joined with "; and ".
 - [ ] Lease package builder picker shows "1614-2 # 200 / 1614-1 # 110" for the test lease.
 - [ ] Phase 4 code imports nothing introduced in Phase 2 or 3.
-- [ ] **Ship gate:** after P1 + P4 are verified on Test, Mark runs the schema script on Prod
-      (local + Azure). He then enters the real Dallas Pro lease and generates its documents before 11/1.
+- [ ] **Ship gate:** after P1 + P4 are verified on Test, Mark runs the schema script on Azure
+      `TenantCRM` and releases image `0.5.0` ("Release to Azure"). He then enters the real Dallas Pro lease
+      and generates its documents before 11/1, from either the deployed or the local app.
 
 Phase 2 (with the worked-example lease in place)
 - [ ] Rent Roll page as of 2026-10-31: #200 = Lease 73 at $975; #110 = Orbit at $1,250.
@@ -931,7 +953,8 @@ Phase 3
 - [ ] Leases Expiring: the terminated lease is not listed as expiring 2026-12-31. The #110 holder's
       lease is listed as ending 2026-10-31.
 
-Then: same checks spot-run on Prod after Mark applies the script there and on Azure.
+After each release: spot-run the phase's key checks on the **deployed** app
+(`https://lucidpm.lucidoproperties.net`), first toggled to Test, then Prod.
 
 **Operator note for splitting Walnut (Mark, by hand, after Phase 3):** for each
 combined record (e.g. `1 & 2`):
@@ -952,6 +975,47 @@ One commit per phase, **in the order P1 → P4 → P2 → P3**, each verified be
 `H73 P2: Rent Roll + Dashboard multi-suite and early-termination fix; converge Rent Roll PDF on page logic` ·
 `H73 P3: Proforma per-suite allocation; Leases Expiring multi-suite + termination`.
 Then a separate commit archives `_vN` siblings of the edited files.
+
+Codex's job ends at verified local commits. **Release to Azure is Mark's step** (or Claude
+at Mark's request). It is the first code release since the Entra/custom-domain cutover.
+
+### Release to Azure
+
+Live as of 2026-10-05: Container App `lucidpm` (RG `Lucido-Apps-RG`), image
+`ghcr.io/mslucido-lab/lucidpm:0.4.3`, revision `lucidpm--0000009`, `minReplicas 0`,
+custom domain `lucidpm.lucidoproperties.net`. Versions for this handoff:
+P1+P4 → **`0.5.0`**, P2 → `0.5.1`, P3 → `0.5.2`.
+
+From the repo root (PowerShell), with Docker Desktop running and the release commit
+checked out with a clean working tree (`git status`). The build copies the working directory,
+so uncommitted files would ship.
+
+```powershell
+# 1. Build. REFLEX_API_URL is baked into the frontend bundle at build time (H64/H71 lesson:
+#    omitting it pointed download links at localhost). Use the custom domain so browser
+#    API calls are same-origin; this also closes the Cycle 5.4 optional follow-up.
+docker build --build-arg REFLEX_API_URL=https://lucidpm.lucidoproperties.net `
+  -t ghcr.io/mslucido-lab/lucidpm:0.5.0 .
+
+# 2. Push (docker login ghcr.io first if needed; a token with write:packages).
+docker push ghcr.io/mslucido-lab/lucidpm:0.5.0
+
+# 3. Point the Container App at it. This creates a new revision; env vars, secrets, auth,
+#    domain and scale settings carry over (update merges, it does not replace).
+az containerapp update -n lucidpm -g Lucido-Apps-RG --image ghcr.io/mslucido-lab/lucidpm:0.5.0
+
+# 4. Confirm the new revision is running and healthy.
+az containerapp revision list -n lucidpm -g Lucido-Apps-RG -o table
+```
+
+**Verify on `https://lucidpm.lucidoproperties.net`:** the sign-in works. The lease form
+shows the Suite(s) dropdown. A Rent Roll PDF opens and a lease package downloads. Those two
+are the links that break if `REFLEX_API_URL` is wrong. Run the Phase key checks, Test then Prod.
+
+**Rollback** (if the new revision misbehaves):
+`az containerapp update -n lucidpm -g Lucido-Apps-RG --image ghcr.io/mslucido-lab/lucidpm:0.4.3`.
+The 014 table can stay. `0.4.3` ignores it. Note: a lease saved with two suites under
+`0.5.0` will show only its primary suite under `0.4.3`, which is harmless. No data is lost.
 
 ---
 
