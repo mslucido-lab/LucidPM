@@ -81,6 +81,7 @@ from LucidPM.lease_merge import (
     render_text_template,
     validate_template_tokens,
 )
+from LucidPM.lease_suites import load_lease_suites, report_label
 
 
 # Dynamic page width, matches Communications responsive page pattern.
@@ -583,12 +584,15 @@ class LeasePackageBuilderState(AppState):
 
         labels = []
         ids = []
+        linked_suites = load_lease_suites([r["LeaseID"] for r in rows], self.db)
         for r in rows:
             lid = int(r["LeaseID"])
             start = fmt_dt(r.get("LeaseStart"))
             end = fmt_dt(r.get("LeaseEnd"))
             prop = str(r.get("PropertyName") or "").strip()
-            suite = str(r.get("SuiteLabel") or "").strip()
+            suite = report_label([
+                row.get("SuiteLabel") for row in linked_suites.get(lid, [])
+            ]) or str(r.get("SuiteLabel") or "").strip()
             rent = fmt_money(r.get("RentAmount"))
             labels.append(f"Lease #{lid} — {prop} {suite} — {start} to {end} — {rent}".strip())
             ids.append(lid)
@@ -698,7 +702,10 @@ class LeasePackageBuilderState(AppState):
 
         self.lease_tenant_name = str(r.get("TenantName") or "")
         self.lease_property_name = str(r.get("PropertyName") or "")
-        self.lease_suite_label = str(r.get("SuiteLabel") or "")
+        linked_suites = load_lease_suites([self.selected_lease_id], self.db)
+        self.lease_suite_label = report_label([
+            row.get("SuiteLabel") for row in linked_suites.get(self.selected_lease_id, [])
+        ]) or str(r.get("SuiteLabel") or "")
         self.lease_start = fmt_dt(r.get("LeaseStart"))
         self.lease_end = fmt_dt(r.get("LeaseEnd"))
         self.lease_rent = fmt_money(r.get("RentAmount"))

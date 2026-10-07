@@ -3350,6 +3350,8 @@ def _available_token_buttons_panel(target_id: str) -> rx.Component:
                 "{{PropertyName}}",
                 "{{LandlordEntity}}",
                 "{{SuiteLabel}}",
+                "{{SuiteWord}}",
+                "{{SuiteCount}}",
                 "{{SuiteFullAddress}}",
                 "{{SuitePremisesDescription}}",
                 "{{SuiteLegalDescription}}",

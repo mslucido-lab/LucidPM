@@ -30,6 +30,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from LucidPM.state import run_query, run_exec, TEST_DB_NAME
+from LucidPM.lease_suites import combine_descriptions, join_labels, load_lease_suites
 
 TOKEN_PATTERN = re.compile(r"\{\{\s*([A-Za-z0-9_\.\-]+)\s*\}\}")
 
@@ -143,8 +144,9 @@ def _notice_address(row: dict) -> str:
     return ", ".join(p for p in parts if p)
 
 
-def _suite_full_address(row: dict, suite_label: str) -> str:
-    override = _s(row.get("SuiteAddressOverride"))
+def _suite_full_address(row: dict, suite_label: str, *, suite_word: str = "Suite",
+                        ignore_override: bool = False) -> str:
+    override = "" if ignore_override else _s(row.get("SuiteAddressOverride"))
     if override:
         return override
     premises = _s(row.get("SuitePremisesDescription"))
@@ -154,7 +156,7 @@ def _suite_full_address(row: dict, suite_label: str) -> str:
     if premises:
         return premises
     if suite_label and address:
-        return f"Suite {suite_label}, {address}"
+        return f"{suite_word} {suite_label}, {address}"
     return address
 
 
@@ -764,13 +766,48 @@ def get_lease_merge_context(tenant_id: int, lease_id: int, db: str = TEST_DB_NAM
     base_rent = first_schedule_rent or fmt_money(lease.get("RentAmount"))
 
     property_name = _s(lease.get("PropertyName"))
-    suite_label = _s(lease.get("SuiteLabel")) or _s(lease.get("TenantSuiteText"))
+    linked_suites = load_lease_suites([lease_id], db).get(int(lease_id), [])
+    is_multi_suite = len(linked_suites) > 1
+    if is_multi_suite:
+        suite_label = join_labels([_s(row.get("SuiteLabel")) for row in linked_suites])
+        suite_premises = combine_descriptions(
+            [_s(row.get("SuitePremisesDescription")) for row in linked_suites],
+            [_s(row.get("SuitePremisesDescription")) for row in linked_suites],
+        )
+        suite_legal_description = combine_descriptions(
+            [_s(row.get("SuitePremisesDescription")) for row in linked_suites],
+            [_s(row.get("SuiteLegalDescription")) for row in linked_suites],
+        )
+        suite_square_feet = sum(
+            (Decimal(str(row.get("SquareFeet") or 0)) for row in linked_suites), Decimal(0)
+        )
+        underwriting_values = [row.get("UnderwritingRent") for row in linked_suites]
+        underwriting_rent = (
+            fmt_money(sum((_money_decimal(value) for value in underwriting_values), Decimal(0)))
+            if any(value is not None for value in underwriting_values)
+            else fmt_money(None)
+        )
+    else:
+        suite_label = _s(lease.get("SuiteLabel")) or _s(lease.get("TenantSuiteText"))
+        suite_premises = _s(lease.get("SuitePremisesDescription"))
+        suite_legal_description = _s(lease.get("SuiteLegalDescription"))
+        suite_square_feet = lease.get("SquareFeet")
+        underwriting_rent = fmt_money(lease.get("UnderwritingRent"))
+    suite_count = len(linked_suites) if is_multi_suite else (1 if suite_label else 0)
+    suite_word = "Suites" if suite_count > 1 else "Suite"
     full_contact_name = " ".join(x for x in [_s(contact.get("FirstName")), _s(contact.get("LastName"))] if x)
     landlord_entity = _s(lease.get("LandlordEntityName")) or _property_owner(property_name)
     property_address = _property_full_address(lease)
-    suite_full_address = _suite_full_address(lease, suite_label)
+    suite_address_row = dict(lease)
+    suite_address_row["SuitePremisesDescription"] = suite_premises
+    # A primary-suite override names only that suite, so it cannot describe a
+    # multi-suite premises.
+    suite_full_address = _suite_full_address(
+        suite_address_row, suite_label, suite_word=suite_word,
+        ignore_override=is_multi_suite,
+    )
     use_type = _s(lease.get("SuiteUseType")) or _s(lease.get("PropertyUseDefault"))
-    legal_description = _s(lease.get("SuiteLegalDescription")) or _s(lease.get("PropertyLegalDescription"))
+    legal_description = suite_legal_description or _s(lease.get("PropertyLegalDescription"))
     county = _s(lease.get("PropertyCounty")) or "Dallas"
     raw_state = _s(lease.get("PropertyState")) or "Texas"
     state = "Texas" if raw_state.upper() == "TX" else raw_state
@@ -878,16 +915,18 @@ def get_lease_merge_context(tenant_id: int, lease_id: int, db: str = TEST_DB_NAM
 
         "Suite": suite_label,
         "SuiteLabel": suite_label,
+        "SuiteWord": suite_word,
+        "SuiteCount": str(suite_count),
         "SuiteFullAddress": suite_full_address,
-        "SuitePremisesDescription": _s(lease.get("SuitePremisesDescription")),
-        "SuiteLegalDescription": _s(lease.get("SuiteLegalDescription")),
+        "SuitePremisesDescription": suite_premises,
+        "SuiteLegalDescription": suite_legal_description,
         "SuiteAddressOverride": _s(lease.get("SuiteAddressOverride")),
         "LegalDescription": legal_description,
         "PremisesDescription": suite_full_address,
-        "SuiteSquareFeet": fmt_number(lease.get("SquareFeet"), 0),
+        "SuiteSquareFeet": fmt_number(suite_square_feet, 0),
         "SuiteUseType": use_type,
         "UseType": use_type,
-        "UnderwritingRent": fmt_money(lease.get("UnderwritingRent")),
+        "UnderwritingRent": underwriting_rent,
         "LeaseTermDescription": _lease_term_description(lease_start, lease_end),
 
         # Extension / option term
