@@ -1,6 +1,6 @@
 -- Generated baseline schema snapshot.
--- Source database: TenantCRM_Test
--- Generated: 2026-08-16T23:44:59
+-- Source database: TenantCRM
+-- Generated: 2026-10-06T23:11:49
 -- Regenerate with: python db/generate_baseline_schema.py
 -- This is a snapshot of the live schema at generation time, NOT a replay
 -- of history -- see db/history/CHANGELOG.md for that.
@@ -16,10 +16,10 @@ CREATE TABLE dbo.[Actions_legacy] (
     [LeaseID] INT NULL,
     [Title] NVARCHAR(200) NOT NULL,
     [Description] NVARCHAR(MAX) NULL,
-    [Status] NVARCHAR(50) NOT NULL DEFAULT ('Open'),
+    [Status] NVARCHAR(50) NOT NULL,
     [Priority] NVARCHAR(20) NULL,
     [DueDate] DATE NULL,
-    [CreatedDate] DATETIME NOT NULL DEFAULT (getdate()),
+    [CreatedDate] DATETIME NOT NULL,
     [CompletedDate] DATETIME NULL,
     [AssignedTo] NVARCHAR(100) NULL,
     [SourceCommunicationID] INT NULL,
@@ -29,17 +29,17 @@ CREATE TABLE dbo.[Actions_legacy] (
 CREATE TABLE dbo.[AIConfig] (
     [AIConfigID] INT IDENTITY(1,1) NOT NULL,
     [APIKeyEncrypted] NVARCHAR(500) NULL,
-    [ModelName] NVARCHAR(100) NOT NULL DEFAULT ('claude-sonnet-4-20250514'),
-    [IsActive] BIT NOT NULL DEFAULT ((1)),
-    [CreatedOn] DATETIME2(7) NOT NULL DEFAULT (sysdatetime()),
-    [UpdatedOn] DATETIME2(7) NOT NULL DEFAULT (sysdatetime()),
+    [ModelName] NVARCHAR(100) NOT NULL,
+    [IsActive] BIT NOT NULL,
+    [CreatedOn] DATETIME2(7) NOT NULL,
+    [UpdatedOn] DATETIME2(7) NOT NULL,
     CONSTRAINT [PK_AIConfig] PRIMARY KEY CLUSTERED ([AIConfigID])
 );
 
 CREATE TABLE dbo.[AppSettings] (
     [SettingKey] NVARCHAR(100) NOT NULL,
     [SettingValue] NVARCHAR(1000) NULL,
-    [UpdatedOn] DATETIME2(7) NOT NULL DEFAULT (sysdatetime()),
+    [UpdatedOn] DATETIME2(7) NOT NULL,
     CONSTRAINT [PK_AppSettings] PRIMARY KEY CLUSTERED ([SettingKey])
 );
 
@@ -71,7 +71,7 @@ CREATE TABLE dbo.[Contacts] (
     [ContactRole] NVARCHAR(30) NULL,
     [IsPrimary] BIT NOT NULL,
     [Salutation] NVARCHAR(50) NULL,
-    [IsEmergencyContact] BIT NOT NULL DEFAULT ((0)),
+    [IsEmergencyContact] BIT NOT NULL,
     CONSTRAINT [PK_Contacts] PRIMARY KEY CLUSTERED ([ContactID])
 );
 
@@ -83,7 +83,7 @@ CREATE TABLE dbo.[ContactSensitiveInfo] (
     [DOB] DATE NULL,
     [Last4SSN] NVARCHAR(4) NULL,
     [DL_Last4] NVARCHAR(4) NULL,
-    [CreatedOn] DATETIME NOT NULL DEFAULT (getdate()),
+    [CreatedOn] DATETIME NOT NULL,
     [UpdatedOn] DATETIME NULL,
     CONSTRAINT [PK_ContactSensitiveInfo] PRIMARY KEY CLUSTERED ([ContactSensitiveInfoID])
 );
@@ -102,15 +102,15 @@ CREATE TABLE dbo.[EmailConfig] (
     [DisplayName] NVARCHAR(100) NULL,
     [EmailAddress] NVARCHAR(200) NULL,
     [IMAPServer] NVARCHAR(200) NULL,
-    [IMAPPort] INT NOT NULL DEFAULT ((993)),
+    [IMAPPort] INT NOT NULL,
     [SMTPServer] NVARCHAR(200) NULL,
-    [SMTPPort] INT NOT NULL DEFAULT ((587)),
+    [SMTPPort] INT NOT NULL,
     [Username] NVARCHAR(200) NULL,
     [PasswordEncrypted] NVARCHAR(500) NULL,
-    [PollIntervalMin] INT NOT NULL DEFAULT ((10)),
-    [IsActive] BIT NOT NULL DEFAULT ((1)),
-    [CreatedOn] DATETIME2(7) NOT NULL DEFAULT (sysdatetime()),
-    [UpdatedOn] DATETIME2(7) NOT NULL DEFAULT (sysdatetime()),
+    [PollIntervalMin] INT NOT NULL,
+    [IsActive] BIT NOT NULL,
+    [CreatedOn] DATETIME2(7) NOT NULL,
+    [UpdatedOn] DATETIME2(7) NOT NULL,
     CONSTRAINT [PK_EmailConfig] PRIMARY KEY CLUSTERED ([EmailConfigID])
 );
 
@@ -119,7 +119,7 @@ CREATE TABLE dbo.[GeneratedLeaseDocuments] (
     [TenantID] INT NOT NULL,
     [LeaseID] INT NOT NULL,
     [LeaseDocumentPackageID] INT NULL,
-    [GeneratedOn] DATETIME2(0) NOT NULL DEFAULT (sysutcdatetime()),
+    [GeneratedOn] DATETIME2(0) NOT NULL,
     [OutputPath] NVARCHAR(1000) NULL,
     [MergeContextJson] NVARCHAR(MAX) NULL,
     [RenderedText] NVARCHAR(MAX) NULL,
@@ -137,14 +137,14 @@ CREATE TABLE dbo.[LeaseDocumentSections] (
     [StartPage] INT NULL,
     [EndPage] INT NULL,
     [StoredFilePath] NVARCHAR(1000) NULL,
-    [SortOrder] INT NOT NULL DEFAULT ((0)),
-    [IsReusable] BIT NOT NULL DEFAULT ((0)),
-    [CreatedOn] DATETIME2(7) NOT NULL DEFAULT (sysdatetime()),
-    [Notes] NVARCHAR(MAX) NULL,
     [StorageRoot] NVARCHAR(1000) NULL,
     [RelativePath] NVARCHAR(1000) NULL,
-    [IsActive] BIT NOT NULL DEFAULT ((1)),
+    [SortOrder] INT NOT NULL,
+    [IsReusable] BIT NOT NULL,
+    [IsActive] BIT NOT NULL,
+    [CreatedOn] DATETIME2(7) NOT NULL,
     [Content] NVARCHAR(MAX) NULL,
+    [Notes] NVARCHAR(MAX) NULL,
     [ClauseTag] NVARCHAR(100) NULL,
     [ArticleNumber] NVARCHAR(20) NULL,
     [DisplayLabel] NVARCHAR(255) NULL,
@@ -154,12 +154,12 @@ CREATE TABLE dbo.[LeaseDocumentSections] (
 
 CREATE TABLE dbo.[LeaseGeneratedDocuments] (
     [LeaseGeneratedDocumentID] INT IDENTITY(1,1) NOT NULL,
-    [LeaseID] INT NOT NULL,
+    [TenantID] INT NULL,
+    [LeaseID] INT NULL,
     [GeneratedFileName] NVARCHAR(255) NOT NULL,
     [StoredFilePath] NVARCHAR(1000) NOT NULL,
-    [GeneratedOn] DATETIME2(7) NOT NULL DEFAULT (sysdatetime()),
+    [GeneratedOn] DATETIME2(7) NOT NULL,
     [PackageNotes] NVARCHAR(MAX) NULL,
-    [TenantID] INT NULL,
     CONSTRAINT [PK_LeaseGeneratedDocuments] PRIMARY KEY CLUSTERED ([LeaseGeneratedDocumentID])
 );
 
@@ -175,32 +175,23 @@ CREATE TABLE dbo.[LeasePackageSections] (
     [LeasePackageSectionID] INT IDENTITY(1,1) NOT NULL,
     [LeaseGeneratedDocumentID] INT NOT NULL,
     [LeaseTemplateSectionID] INT NOT NULL,
-    [SortOrder] INT NOT NULL DEFAULT ((0)),
-    [IsIncluded] BIT NOT NULL DEFAULT ((1)),
-    [SectionID] INT NULL,
+    [SortOrder] INT NOT NULL,
+    [IsIncluded] BIT NOT NULL,
+    [PieceID] INT NULL,
     [Content] NVARCHAR(MAX) NULL,
-    [IsDirty] BIT NOT NULL DEFAULT ((0)),
+    [IsDirty] BIT NOT NULL,
     [ContentSnapshot] NVARCHAR(MAX) NULL,
+    [SectionID] INT NULL,
     CONSTRAINT [PK_LeasePackageSections] PRIMARY KEY CLUSTERED ([LeasePackageSectionID])
 );
 
 CREATE TABLE dbo.[LeaseRentIncreaseTypes] (
-    [IncreaseTypeID] INT IDENTITY(1,1) NOT NULL,
-    [IncreaseTypeName] NVARCHAR(50) NOT NULL,
-    [Description] NVARCHAR(500) NULL,
-    [IsActive] BIT NOT NULL DEFAULT ((1)),
-    [DisplayOrder] INT NOT NULL DEFAULT ((0)),
-    [LeaseRentIncreaseTypeID] INT NULL,
-    [SortOrder] INT NOT NULL DEFAULT ((0)),
-    CONSTRAINT [PK_LeaseRentIncreaseTypes] PRIMARY KEY CLUSTERED ([IncreaseTypeID])
-);
-
-CREATE TABLE dbo.[LeaseRentIncreaseTypes_Legacy_20260315_123957] (
     [LeaseRentIncreaseTypeID] INT IDENTITY(1,1) NOT NULL,
     [IncreaseTypeName] NVARCHAR(50) NOT NULL,
-    [SortOrder] INT NOT NULL DEFAULT ((0)),
-    [IsActive] BIT NOT NULL DEFAULT ((1)),
-    CONSTRAINT [PK_LeaseRentIncreaseTypes_Legacy_20260315_123957] PRIMARY KEY CLUSTERED ([LeaseRentIncreaseTypeID])
+    [SortOrder] INT NOT NULL,
+    [IsActive] BIT NOT NULL,
+    [IncreaseTypeID] INT NOT NULL,
+    CONSTRAINT [PK_LeaseRentIncreaseTypes] PRIMARY KEY CLUSTERED ([LeaseRentIncreaseTypeID])
 );
 
 CREATE TABLE dbo.[LeaseRentSchedule] (
@@ -211,7 +202,7 @@ CREATE TABLE dbo.[LeaseRentSchedule] (
     [RentAmount] MONEY NOT NULL,
     [IncreaseType] NVARCHAR(50) NULL,
     [Notes] NVARCHAR(MAX) NULL,
-    [IncreaseTypeID] INT NOT NULL,
+    [IncreaseTypeID] INT NULL,
     CONSTRAINT [PK_LeaseRentSchedule] PRIMARY KEY CLUSTERED ([LeaseRentScheduleID])
 );
 
@@ -230,7 +221,7 @@ CREATE TABLE dbo.[Leases] (
     [LeaseTermTypeID] INT NULL,
     [ShowAnniversaries] BIT NOT NULL,
     [SuiteID] INT NULL,
-    [LeaseStatus] NVARCHAR(50) NULL DEFAULT ('Active'),
+    [LeaseStatus] NVARCHAR(50) NULL,
     [LeaseTerminationDate] DATETIME NULL,
     [ParentLeaseID] INT NULL,
     [ExecutionDate] DATETIME NULL,
@@ -240,23 +231,33 @@ CREATE TABLE dbo.[Leases] (
 CREATE TABLE dbo.[LeaseSourceDocuments] (
     [LeaseSourceDocumentID] INT IDENTITY(1,1) NOT NULL,
     [LeaseID] INT NULL,
-    [OriginalFileName] NVARCHAR(255) NOT NULL,
-    [StoredFilePath] NVARCHAR(1000) NOT NULL,
-    [PageCount] INT NULL,
-    [DocumentStatus] NVARCHAR(50) NOT NULL DEFAULT (N'Uploaded'),
-    [UploadedOn] DATETIME2(7) NOT NULL DEFAULT (sysdatetime()),
-    [Notes] NVARCHAR(MAX) NULL,
     [PropertyID] INT NULL,
     [TemplateName] NVARCHAR(255) NULL,
-    [DocumentScope] NVARCHAR(50) NOT NULL DEFAULT ('AdminTemplate'),
-    [DocumentCategory] NVARCHAR(50) NOT NULL DEFAULT ('Base Lease'),
+    [DocumentScope] NVARCHAR(50) NOT NULL,
+    [DocumentCategory] NVARCHAR(50) NOT NULL,
     [TemplateVersion] NVARCHAR(50) NULL,
     [StorageRoot] NVARCHAR(1000) NULL,
     [RelativePath] NVARCHAR(1000) NULL,
-    [SourceFileType] NVARCHAR(20) NOT NULL DEFAULT ('PDF'),
-    [IsTemplate] BIT NOT NULL DEFAULT ((1)),
-    [IsActive] BIT NOT NULL DEFAULT ((1)),
+    [SourceFileType] NVARCHAR(20) NOT NULL,
+    [IsTemplate] BIT NOT NULL,
+    [IsActive] BIT NOT NULL,
+    [OriginalFileName] NVARCHAR(255) NOT NULL,
+    [StoredFilePath] NVARCHAR(1000) NOT NULL,
+    [PageCount] INT NULL,
+    [DocumentStatus] NVARCHAR(50) NOT NULL,
+    [UploadedOn] DATETIME2(7) NOT NULL,
+    [Notes] NVARCHAR(MAX) NULL,
     CONSTRAINT [PK_LeaseSourceDocuments] PRIMARY KEY CLUSTERED ([LeaseSourceDocumentID])
+);
+
+CREATE TABLE dbo.[LeaseSuites] (
+    [LeaseSuiteID] INT IDENTITY(1,1) NOT NULL,
+    [LeaseID] INT NOT NULL,
+    [SuiteID] INT NOT NULL,
+    [IsPrimary] BIT NOT NULL,
+    [RentAllocationPct] DECIMAL(9,6) NOT NULL,
+    [CreatedDate] DATETIME NOT NULL,
+    CONSTRAINT [PK_LeaseSuites] PRIMARY KEY CLUSTERED ([LeaseSuiteID])
 );
 
 CREATE TABLE dbo.[LeaseTemplates] (
@@ -264,23 +265,24 @@ CREATE TABLE dbo.[LeaseTemplates] (
     [TemplateName] NVARCHAR(255) NOT NULL,
     [PropertyID] INT NULL,
     [Description] NVARCHAR(MAX) NULL,
-    [IsActive] BIT NOT NULL DEFAULT ((1)),
-    [CreatedOn] DATETIME2(7) NOT NULL DEFAULT (sysdatetime()),
+    [TemplateVersion] INT NOT NULL,
+    [IsActive] BIT NOT NULL,
+    [CreatedOn] DATETIME2(7) NOT NULL,
     [UpdatedOn] DATETIME2(7) NULL,
-    [TemplateVersion] INT NOT NULL DEFAULT ((1)),
     CONSTRAINT [PK_LeaseTemplates] PRIMARY KEY CLUSTERED ([LeaseTemplateID])
 );
 
 CREATE TABLE dbo.[LeaseTemplateSections] (
     [LeaseTemplateSectionID] INT IDENTITY(1,1) NOT NULL,
     [LeaseTemplateID] INT NOT NULL,
-    [SortOrder] INT NOT NULL DEFAULT ((0)),
+    [SortOrder] INT NOT NULL,
     [SectionLabel] NVARCHAR(255) NOT NULL,
+    [DefaultPieceID] INT NULL,
+    [IsOptional] BIT NOT NULL,
+    [IsRequired] BIT NOT NULL,
+    [SectionType] NVARCHAR(50) NOT NULL,
+    [IsActive] BIT NOT NULL,
     [DefaultSectionID] INT NULL,
-    [IsOptional] BIT NOT NULL DEFAULT ((0)),
-    [IsRequired] BIT NOT NULL DEFAULT ((0)),
-    [SectionType] NVARCHAR(50) NOT NULL DEFAULT ('dynamic'),
-    [IsActive] BIT NOT NULL DEFAULT ((1)),
     CONSTRAINT [PK_LeaseTemplateSections] PRIMARY KEY CLUSTERED ([LeaseTemplateSectionID])
 );
 
@@ -333,10 +335,10 @@ CREATE TABLE dbo.[PropertyFinancials] (
     [PropertyFinancialID] INT IDENTITY(1,1) NOT NULL,
     [PropertyID] INT NOT NULL,
     [FiscalYear] INT NOT NULL,
-    [TotalRevenue] DECIMAL(18,2) NOT NULL DEFAULT ((0)),
-    [TotalOperatingExpenses] DECIMAL(18,2) NOT NULL DEFAULT ((0)),
+    [TotalRevenue] DECIMAL(18,2) NOT NULL,
+    [TotalOperatingExpenses] DECIMAL(18,2) NOT NULL,
     [Notes] NVARCHAR(MAX) NULL,
-    [CreatedDate] DATETIME NOT NULL DEFAULT (getdate()),
+    [CreatedDate] DATETIME NOT NULL,
     [UpdatedDate] DATETIME NULL,
     CONSTRAINT [PK_PropertyFinancials] PRIMARY KEY CLUSTERED ([PropertyFinancialID])
 );
@@ -346,13 +348,13 @@ CREATE TABLE dbo.[PropertySuites] (
     [PropertyID] INT NOT NULL,
     [SuiteLabel] NVARCHAR(100) NOT NULL,
     [SuiteSquareFeet] DECIMAL(18,2) NULL,
-    [SortOrder] INT NOT NULL DEFAULT ((0)),
-    [IsActive] BIT NOT NULL DEFAULT ((1)),
+    [SortOrder] INT NOT NULL,
+    [IsActive] BIT NOT NULL,
     [Notes] NVARCHAR(MAX) NULL,
-    [CreatedDate] DATETIME NOT NULL DEFAULT (getdate()),
+    [CreatedDate] DATETIME NOT NULL,
     [UpdatedDate] DATETIME NULL,
     [SquareFeet] DECIMAL(18,2) NULL,
-    [SuiteUseType] NVARCHAR(50) NOT NULL DEFAULT ('Standard'),
+    [SuiteUseType] NVARCHAR(50) NOT NULL,
     [UnderwritingRent] DECIMAL(18,2) NULL,
     [SuiteLegalDescription] NVARCHAR(MAX) NULL,
     [SuitePremisesDescription] NVARCHAR(MAX) NULL,
@@ -371,10 +373,10 @@ CREATE TABLE dbo.[Prospects] (
     [DesiredMoveInDate] DATE NULL,
     [BudgetRange] NVARCHAR(100) NULL,
     [Source] NVARCHAR(50) NULL,
-    [ProspectStatus] NVARCHAR(50) NOT NULL DEFAULT ('Waiting'),
+    [ProspectStatus] NVARCHAR(50) NOT NULL,
     [LastContactDate] DATE NULL,
     [Notes] NVARCHAR(MAX) NULL,
-    [DateCreated] DATETIME NOT NULL DEFAULT (getdate()),
+    [DateCreated] DATETIME NOT NULL,
     [DateModified] DATETIME NULL,
     [ConvertedTenantID] INT NULL,
     CONSTRAINT [PK_Prospects] PRIMARY KEY CLUSTERED ([ProspectID])
@@ -383,19 +385,10 @@ CREATE TABLE dbo.[Prospects] (
 CREATE TABLE dbo.[SchemaChangeLog] (
     [SchemaChangeLogID] INT IDENTITY(1,1) NOT NULL,
     [ScriptName] NVARCHAR(255) NOT NULL,
-    [AppliedOn] DATETIME2(0) NOT NULL DEFAULT (sysdatetime()),
-    [AppliedBy] NVARCHAR(128) NOT NULL DEFAULT (suser_sname()),
+    [AppliedOn] DATETIME2(0) NOT NULL,
+    [AppliedBy] NVARCHAR(128) NOT NULL,
     [Notes] NVARCHAR(1000) NULL,
     CONSTRAINT [PK_SchemaChangeLog] PRIMARY KEY CLUSTERED ([SchemaChangeLogID])
-);
-
-CREATE TABLE dbo.[sysdiagrams] (
-    [name] NVARCHAR(128) NOT NULL,
-    [principal_id] INT NOT NULL,
-    [diagram_id] INT IDENTITY(1,1) NOT NULL,
-    [version] INT NULL,
-    [definition] VARBINARY(MAX) NULL,
-    CONSTRAINT [PK_sysdiagrams] PRIMARY KEY CLUSTERED ([diagram_id])
 );
 
 CREATE TABLE dbo.[TenantAddresses] (
@@ -438,8 +431,8 @@ CREATE TABLE dbo.[TenantReferences] (
     [Notes] NVARCHAR(MAX) NULL,
     [DateContacted] DATE NULL,
     [Outcome] NVARCHAR(50) NULL,
-    [ImportedFromTally] BIT NOT NULL DEFAULT ((0)),
-    [CreatedDate] DATETIME NOT NULL DEFAULT (getdate()),
+    [ImportedFromTally] BIT NOT NULL,
+    [CreatedDate] DATETIME NOT NULL,
     CONSTRAINT [PK_TenantReferences] PRIMARY KEY CLUSTERED ([ReferenceID])
 );
 
@@ -453,17 +446,17 @@ CREATE TABLE dbo.[Tenants] (
     [Suite] NVARCHAR(50) NULL,
     [ProspectID] INT NULL,
     [SuiteID] INT NULL,
-    [IsDBA] BIT NOT NULL DEFAULT ((0)),
+    [IsDBA] BIT NOT NULL,
     CONSTRAINT [PK_Tenants] PRIMARY KEY CLUSTERED ([TenantID])
 );
 
 CREATE TABLE dbo.[TenantScreeningFactors] (
     [FactorID] INT IDENTITY(1,1) NOT NULL,
-    [ScreeningID] INT NOT NULL,
+    [TenantScreeningID] INT NOT NULL,
     [FactorCode] NVARCHAR(50) NOT NULL,
     [PointsEarned] INT NOT NULL,
     [PointsMax] INT NOT NULL,
-    [HardFlag] BIT NOT NULL DEFAULT ((0)),
+    [HardFlag] BIT NOT NULL,
     [Notes] NVARCHAR(500) NULL,
     CONSTRAINT [PK_TenantScreeningFactors] PRIMARY KEY CLUSTERED ([FactorID])
 );
@@ -491,7 +484,7 @@ CREATE TABLE dbo.[TenantScreenings] (
     [RiskTier] NVARCHAR(20) NULL,
     [DepositRecommended] MONEY NULL,
     [Notes] NVARCHAR(MAX) NULL,
-    [CreatedDate] DATETIME NOT NULL DEFAULT (getdate()),
+    [CreatedDate] DATETIME NOT NULL,
     [CalculatedScore] INT NULL,
     [SuggestedTier] NVARCHAR(20) NULL,
     [SuggestedDecision] NVARCHAR(50) NULL,
@@ -518,8 +511,8 @@ CREATE TABLE dbo.[Vendors] (
     [Phone] NVARCHAR(50) NULL,
     [Email] NVARCHAR(255) NULL,
     [Notes] NVARCHAR(MAX) NULL,
-    [IsActive] BIT NOT NULL DEFAULT ((1)),
-    [CreatedDate] DATETIME NOT NULL DEFAULT (getdate()),
+    [IsActive] BIT NOT NULL,
+    [CreatedDate] DATETIME NOT NULL,
     [UpdatedDate] DATETIME NULL,
     CONSTRAINT [PK_Vendors] PRIMARY KEY CLUSTERED ([VendorID])
 );
@@ -528,12 +521,12 @@ CREATE TABLE dbo.[WorkItemActions] (
     [WorkItemActionID] INT IDENTITY(1,1) NOT NULL,
     [WorkItemID] INT NOT NULL,
     [ActionTitle] NVARCHAR(200) NOT NULL,
-    [ActionStatus] NVARCHAR(50) NOT NULL DEFAULT ('Open'),
+    [ActionStatus] NVARCHAR(50) NOT NULL,
     [DueDate] DATE NULL,
     [CompletedDate] DATETIME NULL,
     [AssignedTo] NVARCHAR(100) NULL,
     [Notes] NVARCHAR(MAX) NULL,
-    [CreatedDate] DATETIME NOT NULL DEFAULT (getdate()),
+    [CreatedDate] DATETIME NOT NULL,
     [UpdatedDate] DATETIME NULL,
     [WorkItemBidID] INT NULL,
     [VendorID] INT NULL,
@@ -546,12 +539,12 @@ CREATE TABLE dbo.[WorkItemBids] (
     [VendorID] INT NOT NULL,
     [BidDate] DATE NULL,
     [BidAmount] DECIMAL(18,2) NULL,
-    [BidStatus] NVARCHAR(50) NOT NULL DEFAULT ('Requested'),
+    [BidStatus] NVARCHAR(50) NOT NULL,
     [ScopeSummary] NVARCHAR(MAX) NULL,
     [Notes] NVARCHAR(MAX) NULL,
-    [IsSelected] BIT NOT NULL DEFAULT ((0)),
+    [IsSelected] BIT NOT NULL,
     [SelectedDate] DATETIME NULL,
-    [CreatedDate] DATETIME NOT NULL DEFAULT (getdate()),
+    [CreatedDate] DATETIME NOT NULL,
     [UpdatedDate] DATETIME NULL,
     CONSTRAINT [PK_WorkItemBids] PRIMARY KEY CLUSTERED ([WorkItemBidID])
 );
@@ -559,14 +552,14 @@ CREATE TABLE dbo.[WorkItemBids] (
 CREATE TABLE dbo.[WorkItemCategories] (
     [WorkItemCategoryID] INT IDENTITY(1,1) NOT NULL,
     [CategoryName] NVARCHAR(100) NOT NULL,
-    [SortOrder] INT NOT NULL DEFAULT ((0)),
-    [IsActive] BIT NOT NULL DEFAULT ((1)),
+    [SortOrder] INT NOT NULL,
+    [IsActive] BIT NOT NULL,
     CONSTRAINT [PK_WorkItemCategories] PRIMARY KEY CLUSTERED ([WorkItemCategoryID])
 );
 
 CREATE TABLE dbo.[WorkItems] (
     [WorkItemID] INT IDENTITY(1,1) NOT NULL,
-    [WorkType] NVARCHAR(50) NOT NULL DEFAULT ('Maintenance Request'),
+    [WorkType] NVARCHAR(50) NOT NULL,
     [PropertyID] INT NULL,
     [TenantID] INT NULL,
     [LeaseID] INT NULL,
@@ -574,8 +567,8 @@ CREATE TABLE dbo.[WorkItems] (
     [Category] NVARCHAR(100) NULL,
     [Title] NVARCHAR(200) NOT NULL,
     [Description] NVARCHAR(MAX) NULL,
-    [Status] NVARCHAR(50) NOT NULL DEFAULT ('New'),
-    [Priority] NVARCHAR(20) NOT NULL DEFAULT ('Normal'),
+    [Status] NVARCHAR(50) NOT NULL,
+    [Priority] NVARCHAR(20) NOT NULL,
     [Source] NVARCHAR(100) NULL,
     [SourceCommunicationID] INT NULL,
     [DateReported] DATE NULL,
@@ -586,14 +579,14 @@ CREATE TABLE dbo.[WorkItems] (
     [VendorName] NVARCHAR(200) NULL,
     [EstimatedCost] DECIMAL(18,2) NULL,
     [ActualCost] DECIMAL(18,2) NULL,
-    [IsCapitalProject] BIT NOT NULL DEFAULT ((0)),
-    [IsBillableToTenant] BIT NOT NULL DEFAULT ((0)),
+    [IsCapitalProject] BIT NOT NULL,
+    [IsBillableToTenant] BIT NOT NULL,
     [Notes] NVARCHAR(MAX) NULL,
     [ResolutionSummary] NVARCHAR(MAX) NULL,
-    [CreatedDate] DATETIME NOT NULL DEFAULT (getdate()),
+    [CreatedDate] DATETIME NOT NULL,
     [UpdatedDate] DATETIME NULL,
-    [CategoryID] INT NULL,
     [StatusID] INT NULL,
+    [CategoryID] INT NULL,
     [VendorID] INT NULL,
     CONSTRAINT [PK_WorkItems] PRIMARY KEY CLUSTERED ([WorkItemID])
 );
@@ -601,8 +594,8 @@ CREATE TABLE dbo.[WorkItems] (
 CREATE TABLE dbo.[WorkItemStatuses] (
     [WorkItemStatusID] INT IDENTITY(1,1) NOT NULL,
     [StatusName] NVARCHAR(100) NOT NULL,
-    [SortOrder] INT NOT NULL DEFAULT ((0)),
-    [IsActive] BIT NOT NULL DEFAULT ((1)),
+    [SortOrder] INT NOT NULL,
+    [IsActive] BIT NOT NULL,
     CONSTRAINT [PK_WorkItemStatuses] PRIMARY KEY CLUSTERED ([WorkItemStatusID])
 );
 
@@ -619,10 +612,7 @@ ALTER TABLE dbo.[Communications] ADD CONSTRAINT [FK_Communications_Properties] F
 ALTER TABLE dbo.[Communications] ADD CONSTRAINT [FK_Communications_Tenants] FOREIGN KEY ([TenantID]) REFERENCES dbo.[Tenants] ([TenantID]);
 ALTER TABLE dbo.[Contacts] ADD CONSTRAINT [FK_Contacts_Tenants] FOREIGN KEY ([TenantID]) REFERENCES dbo.[Tenants] ([TenantID]);
 ALTER TABLE dbo.[ContactSensitiveInfo] ADD CONSTRAINT [FK_ContactSensitiveInfo_Contacts] FOREIGN KEY ([ContactID]) REFERENCES dbo.[Contacts] ([ContactID]);
-ALTER TABLE dbo.[LeaseDocumentSections] ADD CONSTRAINT [FK_LeaseDocumentPieces_Leases] FOREIGN KEY ([LeaseID]) REFERENCES dbo.[Leases] ([LeaseID]);
-ALTER TABLE dbo.[LeaseDocumentSections] ADD CONSTRAINT [FK_LeaseDocumentPieces_SourceDocuments] FOREIGN KEY ([LeaseSourceDocumentID]) REFERENCES dbo.[LeaseSourceDocuments] ([LeaseSourceDocumentID]);
 ALTER TABLE dbo.[LeaseGeneratedDocuments] ADD CONSTRAINT [FK_LeaseGeneratedDocuments_Leases] FOREIGN KEY ([LeaseID]) REFERENCES dbo.[Leases] ([LeaseID]);
-ALTER TABLE dbo.[LeaseGeneratedDocumentSections] ADD CONSTRAINT [FK_LeaseGeneratedDocumentPieces_DocumentPieces] FOREIGN KEY ([LeaseDocumentPieceID]) REFERENCES dbo.[LeaseDocumentSections] ([LeaseDocumentSectionID]);
 ALTER TABLE dbo.[LeaseGeneratedDocumentSections] ADD CONSTRAINT [FK_LeaseGeneratedDocumentPieces_GeneratedDocuments] FOREIGN KEY ([LeaseGeneratedDocumentID]) REFERENCES dbo.[LeaseGeneratedDocuments] ([LeaseGeneratedDocumentID]);
 ALTER TABLE dbo.[LeaseRentSchedule] ADD CONSTRAINT [FK_LeaseRentSchedule_LeaseRentIncreaseTypes] FOREIGN KEY ([IncreaseTypeID]) REFERENCES dbo.[LeaseRentIncreaseTypes] ([IncreaseTypeID]);
 ALTER TABLE dbo.[LeaseRentSchedule] ADD CONSTRAINT [FK_LeaseRentSchedule_Leases] FOREIGN KEY ([LeaseID]) REFERENCES dbo.[Leases] ([LeaseID]);
@@ -633,6 +623,8 @@ ALTER TABLE dbo.[Leases] ADD CONSTRAINT [FK_Leases_Properties] FOREIGN KEY ([Pro
 ALTER TABLE dbo.[Leases] ADD CONSTRAINT [FK_Leases_PropertySuites] FOREIGN KEY ([SuiteID]) REFERENCES dbo.[PropertySuites] ([SuiteID]);
 ALTER TABLE dbo.[Leases] ADD CONSTRAINT [FK_Leases_Tenants] FOREIGN KEY ([TenantID]) REFERENCES dbo.[Tenants] ([TenantID]);
 ALTER TABLE dbo.[LeaseSourceDocuments] ADD CONSTRAINT [FK_LeaseSourceDocuments_Leases] FOREIGN KEY ([LeaseID]) REFERENCES dbo.[Leases] ([LeaseID]);
+ALTER TABLE dbo.[LeaseSuites] ADD CONSTRAINT [FK_LeaseSuites_Leases] FOREIGN KEY ([LeaseID]) REFERENCES dbo.[Leases] ([LeaseID]);
+ALTER TABLE dbo.[LeaseSuites] ADD CONSTRAINT [FK_LeaseSuites_PropertySuites] FOREIGN KEY ([SuiteID]) REFERENCES dbo.[PropertySuites] ([SuiteID]);
 ALTER TABLE dbo.[PropertyFinancials] ADD CONSTRAINT [FK_PropertyFinancials_Properties] FOREIGN KEY ([PropertyID]) REFERENCES dbo.[Properties] ([PropertyID]);
 ALTER TABLE dbo.[PropertySuites] ADD CONSTRAINT [FK_PropertySuites_Properties] FOREIGN KEY ([PropertyID]) REFERENCES dbo.[Properties] ([PropertyID]);
 ALTER TABLE dbo.[Prospects] ADD CONSTRAINT [FK_Prospects_Properties] FOREIGN KEY ([PropertyID]) REFERENCES dbo.[Properties] ([PropertyID]);
@@ -644,9 +636,8 @@ ALTER TABLE dbo.[TenantDocuments] ADD CONSTRAINT [FK_TenantDocuments_Tenants] FO
 ALTER TABLE dbo.[TenantReferences] ADD CONSTRAINT [FK_TenantReferences_Tenants] FOREIGN KEY ([TenantID]) REFERENCES dbo.[Tenants] ([TenantID]);
 ALTER TABLE dbo.[Tenants] ADD CONSTRAINT [FK_Tenants_Properties] FOREIGN KEY ([PropertyID]) REFERENCES dbo.[Properties] ([PropertyID]);
 ALTER TABLE dbo.[Tenants] ADD CONSTRAINT [FK_Tenants_PropertySuites] FOREIGN KEY ([SuiteID]) REFERENCES dbo.[PropertySuites] ([SuiteID]);
-ALTER TABLE dbo.[Tenants] ADD CONSTRAINT [FK_Tenants_Prospects] FOREIGN KEY ([ProspectID]) REFERENCES dbo.[Prospects] ([ProspectID]);
 ALTER TABLE dbo.[Tenants] ADD CONSTRAINT [FK_Tenants_Prospects_ProspectID] FOREIGN KEY ([ProspectID]) REFERENCES dbo.[Prospects] ([ProspectID]);
-ALTER TABLE dbo.[TenantScreeningFactors] ADD CONSTRAINT [FK_TenantScreeningFactors_Screening] FOREIGN KEY ([ScreeningID]) REFERENCES dbo.[TenantScreenings] ([TenantScreeningID]);
+ALTER TABLE dbo.[TenantScreeningFactors] ADD CONSTRAINT [FK_TenantScreeningFactors_Screening] FOREIGN KEY ([TenantScreeningID]) REFERENCES dbo.[TenantScreenings] ([TenantScreeningID]);
 ALTER TABLE dbo.[TenantScreenings] ADD CONSTRAINT [FK_TenantScreenings_Tenants] FOREIGN KEY ([TenantID]) REFERENCES dbo.[Tenants] ([TenantID]);
 ALTER TABLE dbo.[Vendors] ADD CONSTRAINT [FK_Vendors_WorkItemCategories] FOREIGN KEY ([VendorCategoryID]) REFERENCES dbo.[WorkItemCategories] ([WorkItemCategoryID]);
 ALTER TABLE dbo.[WorkItemActions] ADD CONSTRAINT [FK_WorkItemActions_Vendors] FOREIGN KEY ([VendorID]) REFERENCES dbo.[Vendors] ([VendorID]);
@@ -654,9 +645,11 @@ ALTER TABLE dbo.[WorkItemActions] ADD CONSTRAINT [FK_WorkItemActions_WorkItemBid
 ALTER TABLE dbo.[WorkItemActions] ADD CONSTRAINT [FK_WorkItemActions_WorkItems] FOREIGN KEY ([WorkItemID]) REFERENCES dbo.[WorkItems] ([WorkItemID]);
 ALTER TABLE dbo.[WorkItemBids] ADD CONSTRAINT [FK_WorkItemBids_Vendors] FOREIGN KEY ([VendorID]) REFERENCES dbo.[Vendors] ([VendorID]);
 ALTER TABLE dbo.[WorkItemBids] ADD CONSTRAINT [FK_WorkItemBids_WorkItems] FOREIGN KEY ([WorkItemID]) REFERENCES dbo.[WorkItems] ([WorkItemID]);
+ALTER TABLE dbo.[WorkItems] ADD CONSTRAINT [FK_WorkItems_Categories] FOREIGN KEY ([CategoryID]) REFERENCES dbo.[WorkItemCategories] ([WorkItemCategoryID]);
 ALTER TABLE dbo.[WorkItems] ADD CONSTRAINT [FK_WorkItems_Communications] FOREIGN KEY ([SourceCommunicationID]) REFERENCES dbo.[Communications] ([CommunicationID]);
 ALTER TABLE dbo.[WorkItems] ADD CONSTRAINT [FK_WorkItems_Leases] FOREIGN KEY ([LeaseID]) REFERENCES dbo.[Leases] ([LeaseID]);
 ALTER TABLE dbo.[WorkItems] ADD CONSTRAINT [FK_WorkItems_Properties] FOREIGN KEY ([PropertyID]) REFERENCES dbo.[Properties] ([PropertyID]);
+ALTER TABLE dbo.[WorkItems] ADD CONSTRAINT [FK_WorkItems_Statuses] FOREIGN KEY ([StatusID]) REFERENCES dbo.[WorkItemStatuses] ([WorkItemStatusID]);
 ALTER TABLE dbo.[WorkItems] ADD CONSTRAINT [FK_WorkItems_Tenants] FOREIGN KEY ([TenantID]) REFERENCES dbo.[Tenants] ([TenantID]);
 ALTER TABLE dbo.[WorkItems] ADD CONSTRAINT [FK_WorkItems_Vendors] FOREIGN KEY ([VendorID]) REFERENCES dbo.[Vendors] ([VendorID]);
 ALTER TABLE dbo.[WorkItems] ADD CONSTRAINT [FK_WorkItems_WorkItemCategories] FOREIGN KEY ([CategoryID]) REFERENCES dbo.[WorkItemCategories] ([WorkItemCategoryID]);
@@ -675,20 +668,20 @@ CREATE INDEX [IX_Communications_TenantID_CommDate] ON dbo.[Communications] ([Ten
 CREATE INDEX [IX_Contacts_TenantID_IsPrimary_Last_First] ON dbo.[Contacts] ([TenantID], [IsPrimary], [LastName], [FirstName]);
 CREATE UNIQUE INDEX [UX_Contacts_OnePrimaryPerTenant] ON dbo.[Contacts] ([TenantID]);
 CREATE UNIQUE INDEX [UQ_ContactSensitiveInfo_ContactID] ON dbo.[ContactSensitiveInfo] ([ContactID]);
-CREATE INDEX [IX_LeaseDocumentPieces_LeaseID] ON dbo.[LeaseDocumentSections] ([LeaseID], [SortOrder]);
-CREATE INDEX [IX_LeaseDocumentPieces_SourceDocumentID] ON dbo.[LeaseDocumentSections] ([LeaseSourceDocumentID], [SortOrder]);
 CREATE INDEX [IX_LeaseGeneratedDocuments_LeaseID] ON dbo.[LeaseGeneratedDocuments] ([LeaseID], [GeneratedOn]);
 CREATE INDEX [IX_LeaseGeneratedDocumentPieces_GeneratedDocumentID] ON dbo.[LeaseGeneratedDocumentSections] ([LeaseGeneratedDocumentID], [SortOrder]);
 CREATE INDEX [IX_LeasePackageSections_Generated_Sort] ON dbo.[LeasePackageSections] ([LeaseGeneratedDocumentID], [SortOrder], [LeasePackageSectionID]);
 CREATE UNIQUE INDEX [UQ_LeaseRentIncreaseTypes_IncreaseTypeName] ON dbo.[LeaseRentIncreaseTypes] ([IncreaseTypeName]);
 CREATE UNIQUE INDEX [UX_LeaseRentIncreaseTypes_IncreaseTypeID] ON dbo.[LeaseRentIncreaseTypes] ([IncreaseTypeID]);
-CREATE UNIQUE INDEX [UQ_LeaseRentIncreaseTypes_IncreaseTypeName] ON dbo.[LeaseRentIncreaseTypes_Legacy_20260315_123957] ([IncreaseTypeName]);
 CREATE INDEX [IX_LeaseRentSchedule_IncreaseTypeID] ON dbo.[LeaseRentSchedule] ([IncreaseTypeID]);
 CREATE INDEX [IX_LeaseRentSchedule_LeaseID_EffectiveStartDate] ON dbo.[LeaseRentSchedule] ([LeaseID], [EffectiveStartDate]);
 CREATE INDEX [IX_Leases_LeaseEnd] ON dbo.[Leases] ([TenantID], [PropertyID], [LeaseTypeID], [RentAmount], [LeaseEnd]);
 CREATE INDEX [IX_Leases_SuiteID] ON dbo.[Leases] ([SuiteID]);
 CREATE INDEX [IX_Leases_TenantID_LeaseEnd_LeaseStart] ON dbo.[Leases] ([TenantID], [LeaseEnd], [LeaseStart]);
 CREATE INDEX [IX_LeaseSourceDocuments_LeaseID] ON dbo.[LeaseSourceDocuments] ([LeaseID]);
+CREATE INDEX [IX_LeaseSuites_SuiteID] ON dbo.[LeaseSuites] ([LeaseID], [RentAllocationPct], [SuiteID]);
+CREATE UNIQUE INDEX [UX_LeaseSuites_Lease_Suite] ON dbo.[LeaseSuites] ([LeaseID], [SuiteID]);
+CREATE UNIQUE INDEX [UX_LeaseSuites_OnePrimary] ON dbo.[LeaseSuites] ([LeaseID]);
 CREATE INDEX [IX_LeaseTemplates_PropertyID_IsActive] ON dbo.[LeaseTemplates] ([PropertyID], [IsActive], [TemplateName]);
 CREATE INDEX [IX_LeaseTemplateSections_Template_Sort] ON dbo.[LeaseTemplateSections] ([LeaseTemplateID], [SortOrder], [LeaseTemplateSectionID]);
 CREATE INDEX [IX_PropertyFinancials_PropertyID_FiscalYear] ON dbo.[PropertyFinancials] ([PropertyID], [FiscalYear]);
@@ -705,7 +698,6 @@ CREATE INDEX [IX_TenantAddresses_TenantID_IsPrimary] ON dbo.[TenantAddresses] ([
 CREATE UNIQUE INDEX [UX_TenantAddresses_OnePrimaryPerTenant] ON dbo.[TenantAddresses] ([TenantID]);
 CREATE INDEX [IX_TenantDocuments_ExpirationDate] ON dbo.[TenantDocuments] ([TenantID], [PropertyID], [DocumentTypeID], [ExpirationDate]);
 CREATE INDEX [IX_TenantDocuments_TenantID_ExpirationDate] ON dbo.[TenantDocuments] ([TenantID], [ExpirationDate]);
-CREATE INDEX [IX_Tenants_ProspectID] ON dbo.[Tenants] ([ProspectID]);
 CREATE INDEX [IX_Tenants_SuiteID] ON dbo.[Tenants] ([SuiteID]);
 CREATE INDEX [IX_Tenants_TenantStatusID] ON dbo.[Tenants] ([TenantID], [PropertyID], [TenantName], [TenantStatusID]);
 CREATE INDEX [IX_Vendors_IsActive_VendorName] ON dbo.[Vendors] ([IsActive], [VendorName]);
