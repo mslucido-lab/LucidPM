@@ -977,6 +977,17 @@ Lease picker labels (554–591) and the selected-lease suite label (669–701): 
 
 ## Validation Checklist
 
+**Test data as it stands (Mark's decision, 2026-10-07: do not correct it).** The worked example on
+Test differs from the spec. Phase 2/3 checks use these expectations instead, and the spec's exact Dallas
+Pro numbers are verified on **Prod after release**:
+- Lease 73: Terminated **2026-10-06**, `RentAmount` $2,275 for all of 2026 (not $975 / 10/31).
+- Lease 78 (from 11/1): #200 primary at **$1,250**, #110 at **$1,025** (amounts reversed vs. the spec).
+- Lease 79 (Automated Business Systems, #110, 11/1/2026–3/31/2027) **double-books #110**. Kept as an
+  edge-case test: as of 11/15, #110 → Lease 79, and Dallas Pro's row is `1614-2 # 200` alone (850 SF,
+  $2,275). Vacancy must not go negative.
+- As of 10/7, `1614-2 # 200` is Vacant. Dallas Pro's 2025 Lease 61 must not appear as a holdover.
+- Phase 3 Proforma: Lease 78 splits #200 $1,250 / #110 $1,025, and the #110 column also carries Lease 79.
+
 Run with the **local app (`reflex run`) toggled to Test, i.e. Azure `TenantCRM_Test`**,
 unless stated otherwise. The worked-example setup edits Test data only. Never edit
 Dallas Pro or Orbit in `TenantCRM`.
