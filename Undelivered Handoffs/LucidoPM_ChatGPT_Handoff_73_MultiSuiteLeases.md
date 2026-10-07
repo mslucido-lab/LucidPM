@@ -1100,9 +1100,47 @@ Live as of 2026-10-05: Container App `lucidpm` (RG `Lucido-Apps-RG`), image
 custom domain `lucidpm.lucidoproperties.net`. Versions for this handoff:
 P1+P4 → **`0.5.0`**, P2 → `0.5.1`, P3 → `0.5.2`.
 
+**Release decision (Mark, 2026-10-07): one release after all four phases** (`0.5.0` = P1–P4),
+not a separate P1+P4 release. 014 was applied to Azure `TenantCRM` on 2026-10-07 (74 rows
+backfilled, all three audits clean). Fallback if P2/P3 slip past the 11/1 Dallas Pro deadline:
+run the local app at commit `71c17ac` (P1+P4) against Prod to enter the lease and generate its documents.
+
+**Pre-deploy resync (required).** Between the 014 run and this release, the live `0.4.3`
+app writes `Leases.SuiteID` but not `LeaseSuites`. A lease created in that window has no
+`LeaseSuites` row; the new code falls back to `Leases.SuiteID`, which is harmless. But a lease
+whose suite was **changed** in that window keeps a stale primary row, and the new code would
+show the old suite. Immediately before step 3 below, as the admin login on Azure `TenantCRM`:
+
+```sql
+-- 1. Inspect drift (expect a handful at most): stale primaries + missing rows
+SELECT l.LeaseID, l.SuiteID AS LeaseSuiteID, ls.SuiteID AS PrimaryRowSuiteID,
+       (SELECT COUNT(*) FROM dbo.LeaseSuites x WHERE x.LeaseID = l.LeaseID) AS LinkedSuites
+FROM dbo.Leases l
+LEFT JOIN dbo.LeaseSuites ls ON ls.LeaseID = l.LeaseID AND ls.IsPrimary = 1
+WHERE (l.SuiteID IS NOT NULL AND (ls.SuiteID IS NULL OR ls.SuiteID <> l.SuiteID))
+   OR (l.SuiteID IS NULL AND ls.SuiteID IS NOT NULL);
+
+-- 2. Resync single-suite leases only (no multi-suite lease can exist before the release)
+BEGIN TRANSACTION;
+DELETE ls FROM dbo.LeaseSuites ls JOIN dbo.Leases l ON l.LeaseID = ls.LeaseID
+WHERE ISNULL(l.SuiteID, -1) <> ls.SuiteID
+  AND (SELECT COUNT(*) FROM dbo.LeaseSuites x WHERE x.LeaseID = l.LeaseID) = 1;
+INSERT INTO dbo.LeaseSuites (LeaseID, SuiteID, IsPrimary, RentAllocationPct)
+SELECT l.LeaseID, l.SuiteID, 1, 100 FROM dbo.Leases l
+WHERE l.SuiteID IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM dbo.LeaseSuites x WHERE x.LeaseID = l.LeaseID);
+-- re-run the three 014 verification queries here; COMMIT only if all are clean
+COMMIT;
+```
+
+Then, once the new revision is live, do **not** use the old revision URL or roll back casually:
+`0.4.3` would recreate the same drift. If a rollback is needed, re-run this resync before
+re-releasing.
+
 From the repo root (PowerShell), with Docker Desktop running and the release commit
 checked out with a clean working tree (`git status`). The build copies the working directory,
-so uncommitted files would ship.
+so uncommitted files would ship. If anyone has uncommitted work in progress, build from a
+separate `git worktree` at the release commit instead.
 
 ```powershell
 # 1. Build. REFLEX_API_URL is baked into the frontend bundle at build time (H64/H71 lesson:
