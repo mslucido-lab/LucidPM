@@ -7,6 +7,7 @@ import io
 import os
 import datetime
 from typing import Optional
+from xml.sax.saxutils import escape
 
 from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib.styles import getSampleStyleSheet
@@ -151,10 +152,20 @@ def generate_rent_roll_pdf(
         "occupant", "rental_rate", "lease_type", "lease_start", "lease_end",
     ]
     col_widths = [100, 70, 50, 65, 145, 65, 100, 60, 60]
+    suite_style = styles["BodyText"].clone("RentRollSuiteCell")
+    suite_style.fontName = "Helvetica"
+    suite_style.fontSize = 8
+    suite_style.leading = 9
+    suite_style.wordWrap = "CJK"
 
     data = [col_headers]
     for row in rows:
-        data.append([str(row.get(k) or "") for k in col_keys])
+        values = [str(row.get(key) or "") for key in col_keys]
+        # A combined suite label belongs in one anchored row.  Use a Paragraph
+        # so ReportLab grows that row instead of clipping the additional suites.
+        if " / " in values[1]:
+            values[1] = Paragraph(escape(values[1]), suite_style)
+        data.append(values)
 
     tbl = Table(data, repeatRows=1, colWidths=col_widths)
     tbl.setStyle(TableStyle([

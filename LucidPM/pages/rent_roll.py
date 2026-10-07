@@ -22,6 +22,7 @@ from LucidPM.state import (
     BRAND_PRIMARY, BRAND_DARK,
 )
 from LucidPM.components.sidebar import page_shell
+from LucidPM.lease_suites import build_rent_roll
 
 # Dynamic page width. Updated by sidebar resizer via CSS variable.
 FULL_PAGE_WIDTH = "calc(100vw - var(--lucid-sidebar-width, 220px) - 64px)"
@@ -98,236 +99,17 @@ class RentRollState(AppState):
             self.is_loading = False
 
     def _do_compute(self):
-        # Parse as_of_date
+        """Populate presentation state from the shared Rent Roll builder."""
         try:
             as_of = datetime.datetime.strptime(self.as_of_date, "%Y-%m-%d").date()
         except (ValueError, TypeError):
             as_of = datetime.date.today()
-
-        # ── Load suites ──
-        suite_sql = (
-            "SELECT ps.SuiteID, ps.PropertyID, ps.SuiteLabel, ps.SquareFeet, "
-            "ps.SuiteUseType, ps.UnderwritingRent, p.PropertyName "
-            "FROM PropertySuites ps "
-            "LEFT JOIN Properties p ON ps.PropertyID = p.PropertyID "
-            "WHERE ps.IsActive = 1 "
-        )
-        suite_params = []
-        if self.property_filter != "All":
-            suite_sql += "AND p.PropertyName = ? "
-            suite_params.append(self.property_filter)
-        suite_sql += "ORDER BY p.PropertyName, ps.SortOrder, ps.SuiteLabel"
-        suites = run_query(suite_sql, tuple(suite_params), db=self.db)
-
-        # ── Load leases with tenant info ──
-        lease_sql = (
-            "SELECT l.LeaseID, l.TenantID, l.PropertyID, l.SuiteID, "
-            "l.LeaseStart, l.LeaseEnd, l.RentAmount, "
-            "COALESCE(lrs.RentAmount, l.RentAmount) AS EffectiveRent, "
-            "ltt.LeaseTermTypeName, "
-            "t.TenantName, t.Suite AS TenantSuite, t.SuiteID AS TenantSuiteID, "
-            "ts.TenantStatusName "
-            "FROM Leases l "
-            "INNER JOIN Tenants t ON l.TenantID = t.TenantID "
-            "LEFT JOIN LeaseTermTypes ltt ON l.LeaseTermTypeID = ltt.LeaseTermTypeID "
-            "LEFT JOIN TenantStatuses ts ON t.TenantStatusID = ts.TenantStatusID "
-            "LEFT JOIN LeaseRentSchedule lrs "
-            "ON lrs.LeaseID = l.LeaseID "
-            "AND lrs.EffectiveStartDate <= ? "
-            "AND (lrs.EffectiveEndDate IS NULL OR lrs.EffectiveEndDate >= ?) "
-        )
-        lease_params = [as_of, as_of]
-        if self.property_filter != "All":
-            lease_sql += "WHERE EXISTS (SELECT 1 FROM Properties p WHERE p.PropertyID = l.PropertyID AND p.PropertyName = ?) "
-            lease_params.append(self.property_filter)
-        leases = run_query(lease_sql, tuple(lease_params), db=self.db)
-
-        # ── Categorize leases ──
-        active_leases = []
-        holdover_leases = []
-        fixed_term_types = {"fixed term", "option term", "multi-year", "multi year"}
-
-        for l in leases:
-            status = str(l.get("TenantStatusName") or "").strip()
-            if status.lower() == "default":
-                continue
-            raw_start = l.get("LeaseStart")
-            raw_end   = l.get("LeaseEnd")
-            if raw_start is None:
-                continue
-            start = raw_start.date() if hasattr(raw_start, "date") else raw_start
-            end   = raw_end.date() if raw_end and hasattr(raw_end, "date") else raw_end
-
-            if start <= as_of and (end is None or end >= as_of):
-                active_leases.append(l)
-            elif (
-                status.lower() == "active"
-                and end is not None
-                and end < as_of
-                and str(l.get("TenantSuite") or "").strip()
-                and str(l.get("LeaseTermTypeName") or "").strip().lower() in fixed_term_types
-            ):
-                holdover_leases.append(l)
-
-        # ── Build output rows ──
-        def fmt_dt(v) -> str:
-            if v is None:
-                return ""
-            d = v.date() if hasattr(v, "date") else v
-            return d.strftime("%m/%d/%Y")
-
-        def fmt_sqft(v) -> str:
-            try:
-                return f"{float(v):,.0f}" if v is not None else ""
-            except (TypeError, ValueError):
-                return ""
-
-        def fmt_money(v) -> str:
-            try:
-                return f"${float(v):,.2f}" if v is not None else ""
-            except (TypeError, ValueError):
-                return ""
-
-        def find_lease(suite_id: int, prop_id: int, suite_label: str, pool: list) -> dict | None:
-            # Match by SuiteID
-            for l in pool:
-                if l.get("SuiteID") is not None and int(l["SuiteID"]) == suite_id:
-                    return l
-            # Fallback: TenantSuiteID + PropertyID
-            for l in pool:
-                tsid = l.get("TenantSuiteID")
-                if tsid is not None and int(tsid) == suite_id and int(l.get("PropertyID", -1)) == prop_id:
-                    return l
-            # Fallback: suite label text match
-            for l in pool:
-                if (int(l.get("PropertyID", -1)) == prop_id and
-                        str(l.get("TenantSuite") or "").strip().upper() == suite_label.upper()):
-                    return l
-            return None
-
-        output_rows = []
-        matched_lease_ids = set()
-
-        for s in suites:
-            sid        = int(s["SuiteID"])
-            prop_id    = int(s["PropertyID"])
-            label      = str(s.get("SuiteLabel") or "").strip()
-            prop_name  = str(s.get("PropertyName") or "")
-            sqft       = s.get("SquareFeet")
-            use_type   = str(s.get("SuiteUseType") or "Standard").strip()
-            under_rent = s.get("UnderwritingRent")
-
-            active_match  = find_lease(sid, prop_id, label, active_leases)
-            holdover_match = find_lease(sid, prop_id, label, holdover_leases) if active_match is None else None
-
-            if active_match is None and holdover_match is None:
-                # Vacant — unless Owner Occupied on Bank basis
-                is_oo_bank = self.basis == "Bank" and use_type == "Owner Occupied"
-                output_rows.append(RentRollRow(
-                    property_name=prop_name,
-                    suite=label,
-                    sq_ft=fmt_sqft(sqft),
-                    occupancy="Occupied" if is_oo_bank else "Vacant",
-                    occupant="Owner Occupied" if is_oo_bank else "",
-                    rental_rate=fmt_money(under_rent) if is_oo_bank else "",
-                    lease_type="Owner Occupied" if is_oo_bank else "",
-                    lease_start="",
-                    lease_end="",
-                ))
-            elif active_match is not None:
-                matched_lease_ids.add(int(active_match["LeaseID"]))
-                output_rows.append(RentRollRow(
-                    property_name=prop_name,
-                    suite=label,
-                    sq_ft=fmt_sqft(sqft),
-                    occupancy="Occupied",
-                    occupant=str(active_match.get("TenantName") or "").strip(),
-                    rental_rate=fmt_money(active_match.get("EffectiveRent")),
-                    lease_type=str(active_match.get("LeaseTermTypeName") or ""),
-                    lease_start=fmt_dt(active_match.get("LeaseStart")),
-                    lease_end=fmt_dt(active_match.get("LeaseEnd")),
-                ))
-            else:
-                matched_lease_ids.add(int(holdover_match["LeaseID"]))
-                output_rows.append(RentRollRow(
-                    property_name=prop_name,
-                    suite=label,
-                    sq_ft=fmt_sqft(sqft),
-                    occupancy="Occupied",
-                    occupant=str(holdover_match.get("TenantName") or "").strip(),
-                    rental_rate=fmt_money(holdover_match.get("EffectiveRent")),
-                    lease_type="Month-to-Month (holdover)",
-                    lease_start=fmt_dt(holdover_match.get("LeaseStart")),
-                    lease_end="",
-                ))
-
-        # Unlinked active leases — active but no matching suite record
-        suite_ids = {int(s["SuiteID"]) for s in suites}
-        for l in active_leases:
-            if int(l["LeaseID"]) in matched_lease_ids:
-                continue
-            sid = l.get("SuiteID")
-            if sid is not None and int(sid) in suite_ids:
-                continue
-            prop_rows = run_query(
-                "SELECT PropertyName FROM Properties WHERE PropertyID=?",
-                (int(l["PropertyID"]),), db=self.db,
-            ) if l.get("PropertyID") else []
-            prop_name = str(prop_rows[0]["PropertyName"]) if prop_rows else ""
-            output_rows.append(RentRollRow(
-                property_name=prop_name,
-                suite=str(l.get("TenantSuite") or "").strip(),
-                sq_ft="",
-                occupancy="Occupied (unlinked)",
-                occupant=str(l.get("TenantName") or "").strip(),
-                rental_rate=fmt_money(l.get("RentAmount")),
-                lease_type=str(l.get("LeaseTermTypeName") or ""),
-                lease_start=fmt_dt(l.get("LeaseStart")),
-                lease_end=fmt_dt(l.get("LeaseEnd")),
-            ))
-
-        self.rows = output_rows
-
-        # ── Compute stats ──
-        total_rentable = 0.0
-        total_occupied = 0.0
-        psf_entries = []  # (sqft, monthly_rent)
-
-        for s in suites:
-            try:
-                sqft = float(s.get("SquareFeet") or 0)
-            except (TypeError, ValueError):
-                sqft = 0.0
-            total_rentable += sqft
-
-        for row in output_rows:
-            if not row.occupancy.lower().startswith("occupied"):
-                continue
-            # Parse sq_ft back from formatted string
-            try:
-                sqft = float(row.sq_ft.replace(",", "")) if row.sq_ft else 0.0
-            except (TypeError, ValueError):
-                sqft = 0.0
-            total_occupied += sqft
-            # Parse rental rate
-            try:
-                rate = float(row.rental_rate.replace("$", "").replace(",", "")) if row.rental_rate else 0.0
-            except (TypeError, ValueError):
-                rate = 0.0
-            if sqft > 0 and rate > 0:
-                psf_entries.append((sqft, rate))
-
-        vacancy_rate = ((total_rentable - total_occupied) / total_rentable) if total_rentable > 0 else 0.0
-
-        avg_psf = None
-        if psf_entries:
-            total_annual = sum(rate * 12 for _, rate in psf_entries)
-            total_sf = sum(sf for sf, _ in psf_entries)
-            avg_psf = total_annual / total_sf if total_sf > 0 else None
-
-        self.total_rentable_sqft = f"{total_rentable:,.0f}"
-        self.total_occupied_sqft = f"{total_occupied:,.0f}"
-        self.vacancy_rate = f"{vacancy_rate:.1%}"
+        result = build_rent_roll(as_of, self.property_filter, self.basis, self.db)
+        self.rows = [RentRollRow(**row) for row in result["rows"]]
+        self.total_rentable_sqft = f"{result['total_rentable']:,.0f}"
+        self.total_occupied_sqft = f"{result['total_occupied']:,.0f}"
+        self.vacancy_rate = f"{result['vacancy_rate']:.1%}"
+        avg_psf = result["avg_annual_psf"]
         self.avg_annual_psf = f"${avg_psf:,.2f}/sf" if avg_psf is not None else "—"
 
     @rx.var

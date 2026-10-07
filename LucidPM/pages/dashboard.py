@@ -11,6 +11,9 @@ import reflex as rx
 import datetime
 
 from LucidPM.components.sidebar import page_shell
+from LucidPM.lease_suites import (
+    is_superseded_holdover, load_lease_suites, match_suite_to_lease,
+)
 from LucidPM.state import AppState, run_query, BRAND_DARK, BRAND_PRIMARY
 
 
@@ -113,7 +116,7 @@ class DashboardState(AppState):
 
         # Load active leases with tenant and suite info
         leases = run_query(
-            "SELECT l.LeaseID, l.SuiteID AS LeaseSuiteID, l.PropertyID, "
+            "SELECT l.LeaseID, l.TenantID, l.SuiteID AS LeaseSuiteID, l.PropertyID, l.LeaseStart, "
             "l.RentAmount, ts.TenantStatusName, "
             "t.SuiteID AS TenantSuiteID, t.Suite AS TenantSuite, "
             "ltt.LeaseTermTypeName "
@@ -123,14 +126,16 @@ class DashboardState(AppState):
             "LEFT JOIN Properties p ON l.PropertyID = p.PropertyID "
             "LEFT JOIN LeaseTermTypes ltt ON l.LeaseTermTypeID = ltt.LeaseTermTypeID "
             f"WHERE (l.LeaseStart <= ? AND (l.LeaseEnd IS NULL OR l.LeaseEnd >= ?)) "
-            f"AND ISNULL(ts.TenantStatusName, '') != 'Default' {prop_clause}",
-            tuple([today, today] + prop_params), db=self.db,
+            f"AND ISNULL(ts.TenantStatusName, '') != 'Default' "
+            f"AND NOT (l.LeaseStatus = 'Terminated' AND l.LeaseTerminationDate IS NOT NULL AND l.LeaseTerminationDate < ?) "
+            f"{prop_clause} ORDER BY l.LeaseStart DESC, l.LeaseID DESC",
+            tuple([today, today, today] + prop_params), db=self.db,
         )
 
         # Holdover leases — expired fixed-term but tenant still Active
         fixed_term_types = {"fixed term", "option term", "multi-year", "multi year"}
         holdover_leases = run_query(
-            "SELECT l.LeaseID, l.SuiteID AS LeaseSuiteID, l.PropertyID, "
+            "SELECT l.LeaseID, l.TenantID, l.SuiteID AS LeaseSuiteID, l.PropertyID, l.LeaseStart, "
             "l.RentAmount, t.SuiteID AS TenantSuiteID, t.Suite AS TenantSuite, "
             "ltt.LeaseTermTypeName "
             "FROM Leases l "
@@ -140,32 +145,30 @@ class DashboardState(AppState):
             "LEFT JOIN LeaseTermTypes ltt ON l.LeaseTermTypeID = ltt.LeaseTermTypeID "
             f"WHERE l.LeaseEnd < ? AND l.LeaseEnd IS NOT NULL "
             f"AND ts.TenantStatusName = 'Active' "
-            f"AND ISNULL(t.Suite, '') != '' {prop_clause}",
+            f"AND ISNULL(t.Suite, '') != '' "
+            f"AND ISNULL(l.LeaseStatus, '') <> 'Terminated' {prop_clause} "
+            f"ORDER BY l.LeaseStart DESC, l.LeaseID DESC",
             tuple([today] + prop_params), db=self.db,
+        )
+        lease_history = run_query(
+            "SELECT l.LeaseID, l.TenantID, l.SuiteID AS LeaseSuiteID, l.PropertyID, "
+            "l.LeaseStart, t.SuiteID AS TenantSuiteID, t.Suite AS TenantSuite "
+            "FROM Leases l INNER JOIN Tenants t ON l.TenantID = t.TenantID",
+            db=self.db,
+        )
+        lease_suites = load_lease_suites(
+            [lease["LeaseID"] for lease in lease_history + leases + holdover_leases], self.db
         )
         holdover_leases = [
             l for l in holdover_leases
             if str(l.get("LeaseTermTypeName") or "").strip().lower() in fixed_term_types
+            and not is_superseded_holdover(l, lease_history, lease_suites)
         ]
-
-        def find_lease(suite_id: int, prop_id: int, suite_label: str, pool: list):
-            for l in pool:
-                sid = l.get("LeaseSuiteID")
-                if sid is not None and int(sid) == suite_id:
-                    return l
-            for l in pool:
-                tsid = l.get("TenantSuiteID")
-                if tsid is not None and int(tsid) == suite_id and int(l.get("PropertyID", -1)) == prop_id:
-                    return l
-            for l in pool:
-                if (int(l.get("PropertyID", -1)) == prop_id and
-                        str(l.get("TenantSuite") or "").strip().upper() == suite_label.upper()):
-                    return l
-            return None
 
         occupied = 0
         vacant = 0
         monthly_rent = 0.0
+        counted_lease_ids: set[int] = set()
 
         for s in suites:
             sid       = int(s["SuiteID"])
@@ -174,21 +177,30 @@ class DashboardState(AppState):
             use_type  = str(s.get("SuiteUseType") or "Standard").strip()
             under_rent = s.get("UnderwritingRent")
 
-            active_match   = find_lease(sid, prop_id, label, leases)
-            holdover_match = find_lease(sid, prop_id, label, holdover_leases) if active_match is None else None
+            active_match = match_suite_to_lease(sid, prop_id, label, leases, lease_suites)
+            holdover_match = (
+                match_suite_to_lease(sid, prop_id, label, holdover_leases, lease_suites)
+                if active_match is None else None
+            )
 
             if active_match is not None:
                 occupied += 1
-                try:
-                    monthly_rent += float(active_match.get("RentAmount") or 0)
-                except (TypeError, ValueError):
-                    pass
+                lease_id = int(active_match["LeaseID"])
+                if lease_id not in counted_lease_ids:
+                    counted_lease_ids.add(lease_id)
+                    try:
+                        monthly_rent += float(active_match.get("RentAmount") or 0)
+                    except (TypeError, ValueError):
+                        pass
             elif holdover_match is not None:
                 occupied += 1
-                try:
-                    monthly_rent += float(holdover_match.get("RentAmount") or 0)
-                except (TypeError, ValueError):
-                    pass
+                lease_id = int(holdover_match["LeaseID"])
+                if lease_id not in counted_lease_ids:
+                    counted_lease_ids.add(lease_id)
+                    try:
+                        monthly_rent += float(holdover_match.get("RentAmount") or 0)
+                    except (TypeError, ValueError):
+                        pass
             else:
                 # Bank basis: Owner Occupied counts as occupied
                 if self.basis == "Bank" and use_type == "Owner Occupied":
