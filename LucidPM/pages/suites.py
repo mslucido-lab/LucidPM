@@ -267,8 +267,9 @@ class SuiteState(AppState):
             return
         # Guard: block if any leases reference this suite
         leases_in_use = run_query(
-            "SELECT TOP 1 LeaseID FROM Leases WHERE SuiteID = ?",
-            (self.selected_suite_id,), db=self.db,
+            "SELECT TOP 1 LeaseID FROM Leases WHERE SuiteID = ? "
+            "UNION SELECT TOP 1 LeaseID FROM LeaseSuites WHERE SuiteID = ?",
+            (self.selected_suite_id, self.selected_suite_id), db=self.db,
         )
         if leases_in_use:
             self.form_error = "Cannot delete — one or more leases reference this suite. Remove the leases first."

@@ -50,6 +50,7 @@ Don't try to rebuild a database by replaying this list — most of it can't be r
 | 35 | 2026-05-30 18:54 | `DataCleanse_AddressLabels_01.sql` | msluc | *(missing — one-time data cleanse, not pure schema)* |
 | 36 | 2026-06-04 00:55 | `lease_amendment_schema.sql` | msluc | *(missing — adds `Leases.ParentLeaseID`, `Leases.ExecutionDate`)* |
 | 37 | 2026-08-25 23:26 | `add_tenant_isdba_flag.sql` | msluc | [`012_...`](012_2026-08-25_2326_add_tenant_isdba_flag.sql) — adds `Tenants.IsDBA` for DBA-aware lease merge tokens |
+| 38 | 2026-10-06 | `014_2026-10-06_0016_lease_suites.sql` | Mark | [`014_...`](014_2026-10-06_0016_lease_suites.sql) — Test: adds `LeaseSuites` for H73 multi-suite leases, indexes, and the existing-lease backfill. Production remains pending the P1/P4 ship gate. |
 
 ---
 

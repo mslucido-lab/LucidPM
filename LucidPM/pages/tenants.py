@@ -70,6 +70,7 @@ import pyodbc
 import datetime
 import os
 import re
+from decimal import Decimal, InvalidOperation
 
 from LucidPM.state import (
     api_base_url, PROD_DB_NAME,
@@ -77,6 +78,10 @@ from LucidPM.state import (
     BRAND_PRIMARY, BRAND_DARK, METHOD_CHOICES, TEST_DB_NAME,
 )
 from LucidPM.components.sidebar import page_shell
+from LucidPM.lease_suites import (
+    LeaseSuitesError, load_lease_suites, pcts_from_amounts, replace_lease_suites,
+    _to_date, effective_end, sf_amounts, split_amount, report_label, transaction,
+)
 
 
 DEFAULT_ATTACHMENT_FOLDER = r"C:\Dell Inspirion\TenantCRM\LeaseDocuments\Generated"
@@ -499,6 +504,11 @@ class TenantState(AppState):
     # Lease form fields
     l_property: str = ""
     l_suite: str = ""
+    l_suites: list[str] = []
+    l_primary_suite: str = ""
+    l_suite_amounts: dict[str, str] = {}
+    lease_suite_sqft: dict[str, str] = {}
+    lease_suite_options: list[dict[str, str]] = []
     l_lease_type: str = ""
     l_lease_term_type: str = ""
     l_status: str = "Active"
@@ -516,12 +526,15 @@ class TenantState(AppState):
 
     lease_form_error: str = ""
     lease_form_success: str = ""
+    lease_form_warning: str = ""
 
     # Lease lookup options (public so UI can bind)
     property_names: list[str] = []
     property_ids: list[int] = []
     suite_names: list[str] = []
     suite_ids: list[int] = []
+    lease_suite_names: list[str] = []
+    lease_suite_ids: list[int] = []
     lease_type_names: list[str] = []
     lease_type_ids: list[int] = []
     lease_term_type_names: list[str] = []
@@ -625,6 +638,53 @@ class TenantState(AppState):
     def lease_editing_banner(self) -> str:
         parts = [x for x in [self.l_suite, self.l_lease_type, self.l_start] if x]
         return "Editing: " + " · ".join(parts) if parts else "Editing lease"
+
+    @rx.var
+    def lease_suite_trigger_label(self) -> str:
+        return ", ".join(self.l_suites) if self.l_suites else "(No suite)"
+
+    @rx.var
+    def has_multiple_lease_suites(self) -> bool:
+        return len(self.l_suites) >= 2
+
+    @rx.var
+    def lease_suite_rows(self) -> list[dict[str, str]]:
+        """Reactive, serializable rows for the multi-suite rent table."""
+        if not self.l_suites:
+            return []
+        amounts: list[Decimal] = []
+        for label in self.l_suites:
+            try:
+                amounts.append(Decimal(str(self.l_suite_amounts.get(label) or "0")))
+            except (InvalidOperation, ValueError):
+                amounts.append(Decimal(0))
+        pcts = pcts_from_amounts(amounts)
+        return [
+            {
+                "label": label,
+                "sqft": self.lease_suite_sqft.get(label, ""),
+                "amount": self.l_suite_amounts.get(label, ""),
+                "share": f"{pct.quantize(Decimal('0.01'))}%",
+                "is_primary": "true" if label == self.l_primary_suite else "false",
+            }
+            for label, pct in zip(self.l_suites, pcts)
+        ]
+
+    @rx.var
+    def lease_suite_totals(self) -> dict[str, str]:
+        total_sqft = Decimal(0)
+        for label in self.l_suites:
+            try:
+                total_sqft += Decimal(str(self.lease_suite_sqft.get(label) or "0"))
+            except (InvalidOperation, ValueError):
+                pass
+        total_rent = Decimal(0)
+        for label in self.l_suites:
+            try:
+                total_rent += Decimal(str(self.l_suite_amounts.get(label) or "0"))
+            except (InvalidOperation, ValueError):
+                pass
+        return {"sqft": format(total_sqft, ",.0f"), "rent": f"${total_rent:,.2f}"}
 
     @rx.var
     def rent_schedule_editing_banner(self) -> str:
@@ -888,19 +948,54 @@ class TenantState(AppState):
         self.increase_type_ids   = [int(r["LeaseRentIncreaseTypeID"]) for r in rows]
 
     def _load_suite_options(self, property_name: str):
-        """Load suite options filtered to the selected property."""
+        """Load active-suite choices for the tenant home-suite control."""
         if not property_name or property_name not in self.property_names:
             self.suite_names = ["(No suite)"]
-            self.suite_ids   = [0]
+            self.suite_ids = [0]
             return
         prop_id = self.property_ids[self.property_names.index(property_name)]
         rows = run_query(
             "SELECT SuiteID, SuiteLabel FROM PropertySuites "
-            "WHERE PropertyID = ? AND IsActive = 1 ORDER BY SortOrder, SuiteLabel",
+            "WHERE PropertyID = ? AND IsActive = 1 "
+            "ORDER BY SortOrder, SuiteLabel",
             (prop_id,), db=self.db,
         )
         self.suite_names = ["(No suite)"] + [str(r["SuiteLabel"]) for r in rows]
-        self.suite_ids   = [0] + [int(r["SuiteID"]) for r in rows]
+        self.suite_ids = [0] + [int(r["SuiteID"]) for r in rows]
+
+    def _load_lease_suite_options(self, property_name: str,
+                                   include_suite_ids: set[int] | None = None):
+        """Load active suites plus linked inactive suites for the lease control only."""
+        if not property_name or property_name not in self.property_names:
+            self.lease_suite_names = []
+            self.lease_suite_ids = []
+            self.lease_suite_options = []
+            self.lease_suite_sqft = {}
+            return
+        prop_id = self.property_ids[self.property_names.index(property_name)]
+        include_suite_ids = include_suite_ids or set()
+        extra_clause = ""
+        params: tuple = (prop_id,)
+        if include_suite_ids:
+            extra_clause = " OR SuiteID IN (" + ",".join("?" for _ in include_suite_ids) + ")"
+            params = (prop_id, *sorted(include_suite_ids))
+        rows = run_query(
+            "SELECT SuiteID, SuiteLabel, SquareFeet, IsActive FROM PropertySuites "
+            "WHERE PropertyID = ? AND (IsActive = 1" + extra_clause + ") "
+            "ORDER BY SortOrder, SuiteLabel",
+            params, db=self.db,
+        )
+        self.lease_suite_names = [str(r["SuiteLabel"]) for r in rows]
+        self.lease_suite_ids = [int(r["SuiteID"]) for r in rows]
+        self.lease_suite_sqft = {str(r["SuiteLabel"]): str(r.get("SquareFeet") or "") for r in rows}
+        self.lease_suite_options = [
+            {
+                "label": str(r["SuiteLabel"]),
+                "display": str(r["SuiteLabel"]) + (" (inactive)" if not r.get("IsActive") else ""),
+                "is_active": "true" if r.get("IsActive") else "false",
+            }
+            for r in rows
+        ]
 
     # ── Tenant list ───────────────────────────────────────────────────────────
 
@@ -3025,10 +3120,15 @@ class TenantState(AppState):
                 return v.strftime("%m/%d/%Y")
             return str(v)
         self._load_lease_parent_options()
+        linked_suites = load_lease_suites([r["LeaseID"] for r in rows], self.db)
         self.leases = [
             LeaseSummary(
                 lease_id=int(r["LeaseID"]),
-                suite_label=str(r.get("SuiteLabel") or ""),
+                suite_label=(
+                    report_label([s["SuiteLabel"] for s in linked_suites[int(r["LeaseID"])]] )
+                    if linked_suites.get(int(r["LeaseID"]))
+                    else str(r.get("SuiteLabel") or "")
+                ),
                 lease_type=str(r.get("LeaseTypeName") or ""),
                 lease_term_type=str(r.get("LeaseTermTypeName") or ""),
                 lease_start=fmt_dt(r.get("LeaseStart")),
@@ -3045,6 +3145,7 @@ class TenantState(AppState):
         self.lease_mode = "edit"
         self.lease_form_error = ""
         self.lease_form_success = ""
+        self.lease_form_warning = ""
         self.confirm_delete_lease = False
         rows = run_query(
             "SELECT l.LeaseID, l.PropertyID, p.PropertyName, l.SuiteID, ps.SuiteLabel, "
@@ -3065,7 +3166,21 @@ class TenantState(AppState):
         r = rows[0]
         prop_name = str(r.get("PropertyName") or "")
         self.l_property      = prop_name
-        self.l_suite         = str(r.get("SuiteLabel") or "(No suite)")
+        linked_suites = load_lease_suites([lease_id], self.db).get(int(lease_id), [])
+        if linked_suites:
+            self.l_suites = [str(s["SuiteLabel"]) for s in linked_suites]
+            self.l_primary_suite = next(
+                (str(s["SuiteLabel"]) for s in linked_suites if s.get("IsPrimary")),
+                self.l_suites[0],
+            )
+            self._load_lease_suite_options(prop_name, {int(s["SuiteID"]) for s in linked_suites})
+        else:
+            label = str(r.get("SuiteLabel") or "")
+            self.l_suites = [label] if label else []
+            self.l_primary_suite = label
+            legacy_ids = {int(r["SuiteID"])} if r.get("SuiteID") is not None else set()
+            self._load_lease_suite_options(prop_name, legacy_ids)
+        self.l_suite = self.l_primary_suite
         self.l_lease_type    = str(r.get("LeaseTypeName") or (self.lease_type_names[0] if self.lease_type_names else ""))
         self.l_lease_term_type = str(r.get("LeaseTermTypeName") or (self.lease_term_type_names[0] if self.lease_term_type_names else ""))
         self.l_status = str(r.get("LeaseStatus") or "Active")
@@ -3081,17 +3196,25 @@ class TenantState(AppState):
         self.l_termination_date = raw_term.strftime("%Y-%m-%d") if raw_term else ""
         self.l_next_due = raw_next.strftime("%Y-%m-%d") if raw_next else ""
         try:
-            self.l_rent    = str(int(float(r.get("RentAmount") or 0)))
-        except (TypeError, ValueError):
+            self.l_rent = format(Decimal(str(r.get("RentAmount") or 0)), ".2f")
+        except (InvalidOperation, TypeError, ValueError):
             self.l_rent = ""
         try:
-            self.l_deposit = str(int(float(r.get("DepositAmount") or 0)))
-        except (TypeError, ValueError):
+            self.l_deposit = format(Decimal(str(r.get("DepositAmount") or 0)), ".2f")
+        except (InvalidOperation, TypeError, ValueError):
             self.l_deposit = ""
         self.l_due_day           = str(int(r.get("RentDueDay") or 1))
         self.l_show_anniversaries = bool(r.get("ShowAnniversaries"))
-        # Load suite options for this property
-        self._load_suite_options(prop_name)
+        if len(self.l_suites) >= 2:
+            pcts = [Decimal(str(s["RentAllocationPct"])) for s in linked_suites]
+            amounts = split_amount(Decimal(str(r.get("RentAmount") or 0)), pcts)
+            self.l_suite_amounts = {
+                str(s["SuiteLabel"]): format(amount, ".2f")
+                for s, amount in zip(linked_suites, amounts)
+            }
+            self._sync_l_rent_from_suite_amounts()
+        else:
+            self.l_suite_amounts = {}
         # Load rent schedule for this lease
         self._load_rent_schedule(lease_id)
         self.new_rent_schedule_row()
@@ -3101,9 +3224,13 @@ class TenantState(AppState):
         self.lease_mode = "new"
         self.lease_form_error = ""
         self.lease_form_success = ""
+        self.lease_form_warning = ""
         self.confirm_delete_lease = False
         self.l_property      = self.property_names[0] if self.property_names else ""
-        self.l_suite         = "(No suite)"
+        self.l_suite = ""
+        self.l_suites = []
+        self.l_primary_suite = ""
+        self.l_suite_amounts = {}
         self.l_lease_type    = self.lease_type_names[0] if self.lease_type_names else ""
         self.l_lease_term_type = self.lease_term_type_names[0] if self.lease_term_type_names else ""
         self.l_status = "Active"
@@ -3117,25 +3244,157 @@ class TenantState(AppState):
         self.rent_schedule = []
         self.new_rent_schedule_row()
         if self.property_names:
-            self._load_suite_options(self.property_names[0])
+            self._load_lease_suite_options(self.property_names[0])
 
     def set_l_property(self, v: str):
         self.l_property = v
-        self.l_suite = "(No suite)"
-        self._load_suite_options(v)
+        self.l_suite = ""
+        self.l_suites = []
+        self.l_primary_suite = ""
+        self.l_suite_amounts = {}
+        self._load_lease_suite_options(v)
+
+    def toggle_l_suite(self, label: str, checked: bool):
+        label = str(label or "")
+        suites = list(self.l_suites)
+        amounts = dict(self.l_suite_amounts)
+        if checked and label not in suites:
+            if len(suites) == 1:
+                amounts[suites[0]] = self.l_rent
+            suites.append(label)
+            amounts.setdefault(label, "")
+        elif not checked and label in suites:
+            suites.remove(label)
+            amounts.pop(label, None)
+        if len(suites) == 1:
+            # Returning to one suite restores that suite's own entered rent.
+            self.l_rent = str(amounts.get(suites[0]) or self.l_rent)
+        self.l_suites = suites
+        self.l_suite_amounts = amounts if len(suites) >= 2 else {}
+        if self.l_primary_suite not in suites:
+            self.l_primary_suite = suites[0] if suites else ""
+        self.l_suite = self.l_primary_suite
+        self._sync_l_rent_from_suite_amounts()
+
+    def set_l_primary_suite(self, label: str):
+        if label in self.l_suites:
+            self.l_primary_suite = label
+            self.l_suite = label
+
+    def set_l_suite_amount(self, label: str, value: str):
+        amounts = dict(self.l_suite_amounts)
+        amounts[str(label)] = str(value or "")
+        self.l_suite_amounts = amounts
+        self._sync_l_rent_from_suite_amounts()
+
+    def split_l_suite_amounts_by_sf(self):
+        try:
+            total = Decimal(str(self.l_rent or "0"))
+        except InvalidOperation:
+            total = Decimal(0)
+        suites = [{"SquareFeet": self.lease_suite_sqft.get(label)} for label in self.l_suites]
+        amounts = sf_amounts(total, suites)
+        self.l_suite_amounts = {
+            label: format(amount, ".2f") for label, amount in zip(self.l_suites, amounts)
+        }
+        self._sync_l_rent_from_suite_amounts()
+
+    def _sync_l_rent_from_suite_amounts(self):
+        if len(self.l_suites) < 2:
+            return
+        total = Decimal(0)
+        for label in self.l_suites:
+            try:
+                total += Decimal(str(self.l_suite_amounts.get(label) or "0"))
+            except InvalidOperation:
+                continue
+        self.l_rent = format(total, ".2f")
+
+    def _lease_overlap_note(self, lease_id: int, suite_ids: list[int], lease_start,
+                            lease_end, lease_status: str, termination_date) -> str:
+        """Return one non-blocking overlapping-lease warning, if any."""
+        if not suite_ids:
+            return ""
+        placeholders = ",".join("?" for _ in suite_ids)
+        rows = run_query(
+            "SELECT DISTINCT LeaseID, LeaseStart, LeaseEnd, LeaseStatus, LeaseTerminationDate, "
+            "TenantName, SuiteLabel FROM ("
+            "SELECT l.LeaseID, l.LeaseStart, l.LeaseEnd, l.LeaseStatus, l.LeaseTerminationDate, "
+            "t.TenantName, ps.SuiteLabel "
+            "FROM Leases l JOIN Tenants t ON t.TenantID = l.TenantID "
+            "JOIN PropertySuites ps ON ps.SuiteID = l.SuiteID "
+            f"WHERE l.SuiteID IN ({placeholders}) AND l.LeaseID <> ? "
+            "UNION "
+            "SELECT l.LeaseID, l.LeaseStart, l.LeaseEnd, l.LeaseStatus, l.LeaseTerminationDate, "
+            "t.TenantName, ps.SuiteLabel "
+            "FROM LeaseSuites ls JOIN Leases l ON l.LeaseID = ls.LeaseID "
+            "JOIN Tenants t ON t.TenantID = l.TenantID "
+            "JOIN PropertySuites ps ON ps.SuiteID = ls.SuiteID "
+            f"WHERE ls.SuiteID IN ({placeholders}) AND l.LeaseID <> ?"
+            ") candidates ORDER BY LeaseStart DESC, LeaseID DESC",
+            (*suite_ids, lease_id, *suite_ids, lease_id), db=self.db,
+        )
+        current = {
+            "LeaseEnd": lease_end,
+            "LeaseStatus": lease_status,
+            "LeaseTerminationDate": termination_date,
+        }
+        current_start = _to_date(lease_start) or datetime.date.min
+        current_end = effective_end(current) or datetime.date.max
+        for other in rows:
+            other_start = _to_date(other.get("LeaseStart")) or datetime.date.min
+            other_end = effective_end(other) or datetime.date.max
+            if current_start <= other_end and other_start <= current_end:
+                end_text = (effective_end(other).strftime("%m/%d/%Y")
+                            if effective_end(other) else "open-ended / month-to-month")
+                return (
+                    f" Note: Suite {other.get('SuiteLabel') or ''} is also on "
+                    f"{other.get('TenantName') or 'another tenant'} Lease #{other['LeaseID']} "
+                    f"({other_start.strftime('%m/%d/%Y') if other.get('LeaseStart') else 'unknown start'}-{end_text})."
+                )
+        return ""
 
     def save_lease(self):
         self.lease_form_error = ""
         self.lease_form_success = ""
+        self.lease_form_warning = ""
         # Resolve IDs
         if not self.l_property or self.l_property not in self.property_names:
             self.lease_form_error = "Property is required."
             return
         prop_id = self.property_ids[self.property_names.index(self.l_property)]
-        suite_id = None
-        if self.l_suite and self.l_suite != "(No suite)" and self.l_suite in self.suite_names:
-            idx = self.suite_names.index(self.l_suite)
-            suite_id = self.suite_ids[idx] or None
+        suite_id_by_label = dict(zip(self.lease_suite_names, self.lease_suite_ids))
+        if any(label not in suite_id_by_label for label in self.l_suites):
+            self.lease_form_error = "One or more selected suites are no longer available."
+            return
+        suite_rows: list[tuple[int, bool, Decimal]] = []
+        if len(self.l_suites) >= 2:
+            amounts_by_label: dict[str, Decimal] = {}
+            for label in self.l_suites:
+                try:
+                    amount = Decimal(str(self.l_suite_amounts.get(label) or ""))
+                except InvalidOperation:
+                    self.lease_form_error = "Enter a monthly rent for each suite."
+                    return
+                if amount <= 0:
+                    self.lease_form_error = "Enter a monthly rent for each suite."
+                    return
+                amounts_by_label[label] = amount
+            sort_order = {label: index for index, label in enumerate(self.lease_suite_names)}
+            row_labels = [self.l_primary_suite] + sorted(
+                (label for label in self.l_suites if label != self.l_primary_suite),
+                key=lambda label: sort_order.get(label, len(sort_order)),
+            )
+            amounts = [amounts_by_label[label] for label in row_labels]
+            shares = pcts_from_amounts(amounts)
+            suite_rows = [
+                (suite_id_by_label[label], label == self.l_primary_suite, share)
+                for label, share in zip(row_labels, shares)
+            ]
+        elif self.l_suites:
+            label = self.l_suites[0]
+            suite_rows = [(suite_id_by_label[label], True, Decimal(100))]
+        suite_id = next((suite for suite, primary, _ in suite_rows if primary), None)
         if not self.l_lease_type or self.l_lease_type not in self.lease_type_names:
             self.lease_form_error = "Lease type is required."
             return
@@ -3169,8 +3428,8 @@ class TenantState(AppState):
         except ValueError:
             next_due = None
         try:
-            rent = float(self.l_rent) if self.l_rent.strip() else 0.0
-        except ValueError:
+            rent = float(sum(amounts)) if len(suite_rows) >= 2 else (float(self.l_rent) if self.l_rent.strip() else 0.0)
+        except (InvalidOperation, ValueError):
             rent = 0.0
         try:
             deposit = float(self.l_deposit) if self.l_deposit.strip() else 0.0
@@ -3183,56 +3442,68 @@ class TenantState(AppState):
             due_day = 1
 
         if self.lease_mode == "edit":
-            run_exec(
-                "UPDATE Leases SET PropertyID=?, SuiteID=?, LeaseTypeID=?, LeaseTermTypeID=?, "
-                "LeaseStart=?, LeaseEnd=?, ExecutionDate=?, ParentLeaseID=?, "
-                "LeaseStatus=?, LeaseTerminationDate=?, RentAmount=?, DepositAmount=?, RentDueDay=?, "
-                "NextDueDate=?, ShowAnniversaries=? WHERE LeaseID=?",
-                (prop_id, suite_id, lease_type_id, lease_term_type_id,
-                 lease_start, lease_end, execution_date, parent_lease_id,
-                 self.l_status, termination_date, rent, deposit, due_day,
-                 next_due, self.l_show_anniversaries, self.selected_lease_id),
-                db=self.db,
-            )
-            # Keep base rent schedule row in sync
-            run_exec(
-                "UPDATE LeaseRentSchedule SET RentAmount=? "
-                "WHERE LeaseID=? AND IncreaseTypeID = "
-                "(SELECT TOP 1 LeaseRentIncreaseTypeID FROM LeaseRentIncreaseTypes WHERE IncreaseTypeName='Base')",
-                (rent, self.selected_lease_id), db=self.db,
+            try:
+                with transaction(self.db) as cur:
+                    cur.execute(
+                        "UPDATE Leases SET PropertyID=?, SuiteID=?, LeaseTypeID=?, LeaseTermTypeID=?, "
+                        "LeaseStart=?, LeaseEnd=?, ExecutionDate=?, ParentLeaseID=?, "
+                        "LeaseStatus=?, LeaseTerminationDate=?, RentAmount=?, DepositAmount=?, RentDueDay=?, "
+                        "NextDueDate=?, ShowAnniversaries=? WHERE LeaseID=?",
+                        (prop_id, suite_id, lease_type_id, lease_term_type_id,
+                         lease_start, lease_end, execution_date, parent_lease_id,
+                         self.l_status, termination_date, rent, deposit, due_day,
+                         next_due, self.l_show_anniversaries, self.selected_lease_id),
+                    )
+                    cur.execute(
+                        "UPDATE LeaseRentSchedule SET RentAmount=? "
+                        "WHERE LeaseID=? AND IncreaseTypeID = "
+                        "(SELECT TOP 1 LeaseRentIncreaseTypeID FROM LeaseRentIncreaseTypes WHERE IncreaseTypeName='Base')",
+                        (rent, self.selected_lease_id),
+                    )
+                    replace_lease_suites(cur, self.selected_lease_id, prop_id, suite_rows)
+            except LeaseSuitesError as exc:
+                self.lease_form_error = str(exc)
+                return
+            overlap_note = self._lease_overlap_note(
+                self.selected_lease_id, [suite for suite, _, _ in suite_rows], lease_start,
+                lease_end, self.l_status, termination_date,
             )
             self.lease_form_success = "Lease saved."
+            self.lease_form_warning = overlap_note.strip()
             self._load_rent_schedule(self.selected_lease_id)
         else:
-            # INSERT and get new ID
-            run_exec(
-                "INSERT INTO Leases (TenantID, PropertyID, SuiteID, LeaseTypeID, LeaseTermTypeID, "
-                "LeaseStart, LeaseEnd, ExecutionDate, ParentLeaseID, LeaseStatus, LeaseTerminationDate, "
-                "RentAmount, DepositAmount, RentDueDay, NextDueDate, ShowAnniversaries) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (self.tenant_id, prop_id, suite_id, lease_type_id, lease_term_type_id,
-                 lease_start, lease_end, execution_date, parent_lease_id, self.l_status, termination_date,
-                 rent, deposit, due_day, next_due, self.l_show_anniversaries),
-                db=self.db,
+            try:
+                with transaction(self.db) as cur:
+                    cur.execute(
+                        "INSERT INTO Leases (TenantID, PropertyID, SuiteID, LeaseTypeID, LeaseTermTypeID, "
+                        "LeaseStart, LeaseEnd, ExecutionDate, ParentLeaseID, LeaseStatus, LeaseTerminationDate, "
+                        "RentAmount, DepositAmount, RentDueDay, NextDueDate, ShowAnniversaries) "
+                        "OUTPUT INSERTED.LeaseID VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (self.tenant_id, prop_id, suite_id, lease_type_id, lease_term_type_id,
+                         lease_start, lease_end, execution_date, parent_lease_id, self.l_status, termination_date,
+                         rent, deposit, due_day, next_due, self.l_show_anniversaries),
+                    )
+                    new_id = int(cur.fetchone()[0])
+                    if lease_start:
+                        cur.execute(
+                            "INSERT INTO LeaseRentSchedule (LeaseID, EffectiveStartDate, EffectiveEndDate, "
+                            "RentAmount, IncreaseTypeID, Notes) "
+                            "VALUES (?, ?, NULL, ?, "
+                            "(SELECT TOP 1 LeaseRentIncreaseTypeID FROM LeaseRentIncreaseTypes WHERE IncreaseTypeName='Base'), "
+                            "'Initial rent on lease creation')",
+                            (new_id, lease_start, rent),
+                        )
+                    replace_lease_suites(cur, new_id, prop_id, suite_rows)
+            except LeaseSuitesError as exc:
+                self.lease_form_error = str(exc)
+                return
+            overlap_note = self._lease_overlap_note(
+                new_id, [suite for suite, _, _ in suite_rows], lease_start,
+                lease_end, self.l_status, termination_date,
             )
-            # Get the new lease ID
-            id_rows = run_query(
-                "SELECT TOP 1 LeaseID FROM Leases WHERE TenantID=? ORDER BY LeaseID DESC",
-                (self.tenant_id,), db=self.db,
-            )
-            if id_rows and lease_start:
-                new_id = int(id_rows[0]["LeaseID"])
-                # Auto-create base rent schedule row
-                run_exec(
-                    "INSERT INTO LeaseRentSchedule (LeaseID, EffectiveStartDate, EffectiveEndDate, "
-                    "RentAmount, IncreaseTypeID, Notes) "
-                    "VALUES (?, ?, NULL, ?, "
-                    "(SELECT TOP 1 LeaseRentIncreaseTypeID FROM LeaseRentIncreaseTypes WHERE IncreaseTypeName='Base'), "
-                    "'Initial rent on lease creation')",
-                    (new_id, lease_start, rent), db=self.db,
-                )
-            self.lease_form_success = "Lease created."
             self.new_lease()
+            self.lease_form_success = "Lease created."
+            self.lease_form_warning = overlap_note.strip()
         self.load_leases()
 
     def confirm_delete_lease_action(self):
@@ -3247,6 +3518,7 @@ class TenantState(AppState):
         # Delete rent schedule rows first (FK constraint)
         run_exec("DELETE FROM LeaseRentSchedule WHERE LeaseID=?",
                  (self.selected_lease_id,), db=self.db)
+        # LeaseSuites has ON DELETE CASCADE from Leases.
         run_exec("DELETE FROM Leases WHERE LeaseID=?",
                  (self.selected_lease_id,), db=self.db)
         self.load_leases()
@@ -4415,14 +4687,41 @@ def leases_tab() -> rx.Component:
                 spacing="1", width="100%",
             ),
             rx.vstack(
-                rx.text("Suite", size="1", color="#666"),
-                rx.cond(
-                    TenantState.suite_names.length() > 0,
-                    rx.select(TenantState.suite_names, value=TenantState.l_suite,
-                              on_change=TenantState.set_l_suite, size="2", width="100%"),
-                    rx.text("Select property first", size="2", color="#888"),
+                rx.text("Suite(s)", size="1", color="#666"),
+                rx.popover.root(
+                    rx.popover.trigger(
+                        rx.button(
+                            rx.hstack(
+                                rx.text(
+                                    TenantState.lease_suite_trigger_label,
+                                    white_space="nowrap", overflow="hidden", text_overflow="ellipsis",
+                                ),
+                                rx.text("▾", color="#555", aria_hidden=True),
+                                justify="between", align="center", width="100%",
+                            ),
+                            variant="outline", size="2", width="190px", padding_x="10px",
+                        ),
+                    ),
+                    rx.popover.content(
+                        rx.vstack(
+                            rx.foreach(
+                                TenantState.lease_suite_options,
+                                lambda option: rx.hstack(
+                                    rx.checkbox(
+                                        checked=TenantState.l_suites.contains(option["label"]),
+                                        on_change=lambda checked: TenantState.toggle_l_suite(option["label"], checked),
+                                        aria_label=option["display"],
+                                    ),
+                                    rx.text(option["display"], white_space="nowrap", flex_shrink="0"),
+                                    spacing="3", align="center", width="100%", white_space="nowrap",
+                                ),
+                            ),
+                            spacing="2", width="290px", max_height="280px", overflow_y="auto",
+                        ),
+                        side="bottom", align="start",
+                    ),
                 ),
-                spacing="1", width="100%",
+                spacing="1", width="190px",
             ),
             rx.vstack(
                 rx.text("Lease type *", size="1", color="#666"),
@@ -4510,12 +4809,58 @@ def leases_tab() -> rx.Component:
             columns="4", spacing="4", width="100%",
         ),
 
+        # Per-suite rent allocation, required only for a multi-suite lease.
+        rx.cond(
+            TenantState.has_multiple_lease_suites,
+            rx.vstack(
+                rx.text("Suite rent allocation", size="1", color="#666"),
+                rx.foreach(
+                    TenantState.lease_suite_rows,
+                    lambda row: rx.grid(
+                        rx.text(row["label"], size="2"),
+                        rx.text(row["sqft"], size="2", color="#666"),
+                        rx.input(
+                            value=row["amount"], type="number", size="2",
+                            on_change=lambda value: TenantState.set_l_suite_amount(row["label"], value),
+                        ),
+                        rx.text(row["share"], size="2", align="right"),
+                        columns="4", spacing="3", width="100%", align_items="center",
+                    ),
+                ),
+                rx.grid(
+                    rx.text("Total", size="2", weight="bold"),
+                    rx.text(TenantState.lease_suite_totals["sqft"], size="2", weight="bold"),
+                    rx.text(TenantState.lease_suite_totals["rent"], size="2", weight="bold"),
+                    rx.text("100%", size="2", weight="bold", align="right"),
+                    columns="4", spacing="3", width="100%", align_items="center",
+                    padding_top="4px", style={"border_top": "1px solid #d9e2f2"},
+                ),
+                rx.hstack(
+                    rx.text("Primary", size="2", color="#666"),
+                    rx.radio_group(
+                        TenantState.l_suites,
+                        value=TenantState.l_primary_suite,
+                        on_change=TenantState.set_l_primary_suite,
+                        direction="row", size="2",
+                    ),
+                    rx.spacer(),
+                    rx.button("Split total by SF", on_click=TenantState.split_l_suite_amounts_by_sf,
+                              variant="soft", size="1"),
+                    width="100%", align="center",
+                ),
+                spacing="2", width="100%", padding="10px",
+                style={"border": "1px solid #d9e2f2", "border_radius": "6px", "background": "#f8fbff"},
+            ),
+            rx.fragment(),
+        ),
+
         # Row 2b: rent and deposit
         rx.grid(
             rx.vstack(
                 rx.text("Monthly rent ($)", size="1", color="#666"),
                 rx.input(value=TenantState.l_rent, on_change=TenantState.set_l_rent,
-                         placeholder="0", type="number", size="2", width="100%"),
+                         placeholder="0", type="number", size="2", width="100%",
+                         read_only=TenantState.has_multiple_lease_suites),
                 spacing="1", width="100%",
             ),
             rx.vstack(
@@ -4565,6 +4910,9 @@ def leases_tab() -> rx.Component:
                 rx.fragment()),
         rx.cond(TenantState.lease_form_success != "",
                 rx.callout(TenantState.lease_form_success, color="green", variant="soft"),
+                rx.fragment()),
+        rx.cond(TenantState.lease_form_warning != "",
+                rx.callout(TenantState.lease_form_warning, color_scheme="orange", variant="soft"),
                 rx.fragment()),
 
         # Buttons

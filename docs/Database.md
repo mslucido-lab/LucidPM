@@ -33,6 +33,14 @@ The app toggles between them at runtime via `AppState.use_test_db`; nearly every
 
 `db/generate_baseline_schema.py` currently emits tables, foreign keys, and indexes only. It does not emit database-scoped DDL triggers, so regenerating `db/baseline_schema.sql` does not include `trg_LogSchemaChanges`. Extending the generator is separate follow-up work.
 
+### Multi-suite leases
+
+`dbo.LeaseSuites` (H73) is the junction table for the suites covered by a lease.
+It holds `LeaseID`, `SuiteID`, `IsPrimary`, and `RentAllocationPct`. `Leases.SuiteID`
+remains the compatibility column and is synchronized to the one primary link. The
+application validates that a linked lease has exactly one primary suite, positive
+allocations totaling exactly 100%, and suites from only its own property.
+
 ## Secrets and encryption
 
 The SMTP password and Anthropic API key are stored encrypted (Fernet) in `dbo.EmailConfig.PasswordEncrypted` and `dbo.AIConfig.APIKeyEncrypted`. The key(s) come from the **`LUCIDPM_FERNET_KEY`** environment variable (comma-separated — the first encrypts, all decrypt), not from the database. The app boots without it; only email/AI actions need it. See `.env.example` and `docs/DeveloperSetup.md` §5.
