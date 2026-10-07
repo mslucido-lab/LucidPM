@@ -23,6 +23,7 @@ import reflex as rx
 
 from LucidPM.state import AppState, run_query, BRAND_PRIMARY, BRAND_DARK, api_base_url
 from LucidPM.components.sidebar import page_shell
+from LucidPM.lease_suites import effective_end, load_lease_suites, suite_ids_for
 
 
 # Page width — matches vendors.py / properties.py pattern
@@ -135,6 +136,7 @@ def _successor_starting_rent(
     sched: list[dict],
     lease_id: int,
     ann: datetime.date,
+    lease_suites: dict[int, list[dict]],
 ) -> Optional[float]:
     """
     Find a successor lease for the same tenant+suite starting on ann,
@@ -145,21 +147,22 @@ def _successor_starting_rent(
     if not this_lease:
         return None
     tenant_id = this_lease.get("TenantID")
-    suite_id  = this_lease.get("SuiteID")
     for l in leases:
         if (int(l["LeaseID"]) != lease_id
                 and l.get("TenantID") == tenant_id
-                and l.get("SuiteID") == suite_id):
+                and _same_suite(this_lease, l, lease_suites)):
             start = _to_date(l.get("LeaseStart"))
-            if start is not None and start == ann:
+            if start is not None and start == ann and (effective_end(l) is None or effective_end(l) >= start):
                 rent = _rent_on_date(sched, int(l["LeaseID"]), start)
                 if rent is not None:
                     return rent
     return None
 
 
-def _same_suite(a: dict, b: dict) -> bool:
+def _same_suite(a: dict, b: dict, lease_suites: dict[int, list[dict]]) -> bool:
     """Best-effort same-suite comparison for lease transition matching."""
+    if suite_ids_for(a, lease_suites) & suite_ids_for(b, lease_suites):
+        return True
     for key in ("SuiteID", "TenantSuiteID"):
         av = a.get(key)
         bv = b.get(key)
@@ -183,6 +186,7 @@ def _active_predecessor_rent(
     sched: list[dict],
     lease_id: int,
     today: datetime.date,
+    lease_suites: dict[int, list[dict]],
 ) -> Optional[float]:
     """
     For a future successor lease, return the rent from the same tenant+suite
@@ -202,11 +206,11 @@ def _active_predecessor_rent(
                 continue
             if l.get("TenantID") != tenant_id:
                 continue
-            if not _same_suite(this_lease, l):
+            if not _same_suite(this_lease, l, lease_suites):
                 continue
 
             start = _to_date(l.get("LeaseStart"))
-            end = _to_date(l.get("LeaseEnd"))
+            end = effective_end(l)
             if start is not None and start <= today and (end is None or end >= today):
                 candidates.append((start, l))
         except Exception:
@@ -246,9 +250,14 @@ def _recommended_rent(current: Optional[float], pct: float = 0.05, min_inc: floa
     return rounded, rounded - r
 
 
-def _has_successor(row: dict, all_leases: list[dict], grace_days: int = 7) -> bool:
+def _has_successor(
+    row: dict,
+    all_leases: list[dict],
+    lease_suites: dict[int, list[dict]],
+    grace_days: int = 7,
+) -> bool:
     """True if another lease for the same tenant starts within grace_days of this lease ending."""
-    current_end = _to_date(row.get("LeaseEnd"))
+    current_end = effective_end(row)
     if current_end is None:
         return False
     try:
@@ -264,8 +273,12 @@ def _has_successor(row: dict, all_leases: list[dict], grace_days: int = 7) -> bo
                 continue
             if int(other.get("TenantID")) != tenant_id:
                 continue
+            if not _same_suite(row, other, lease_suites):
+                continue
             other_start = _to_date(other.get("LeaseStart"))
-            if other_start and current_end <= other_start <= latest_start:
+            other_end = effective_end(other)
+            if (other_start and current_end <= other_start <= latest_start
+                    and (other_end is None or other_end >= other_start)):
                 return True
         except Exception:
             continue
@@ -287,6 +300,7 @@ def _build_events(
     term_type_map: dict,
     today: datetime.date,
     horizon: datetime.date,
+    lease_suites: dict[int, list[dict]],
 ) -> list[dict]:
     """Core event-building logic — matches Streamlit dashboard implementation."""
     EXPIRATION_TERMS = {"fixed term", "multi-year", "multi year", "option term"}
@@ -298,7 +312,7 @@ def _build_events(
         term_type_id  = r.get("LeaseTermTypeID")
         term_name     = str(term_type_map.get(term_type_id) or "").strip().lower().replace("–", "-")
         lease_start   = _to_date(r.get("LeaseStart"))
-        lease_end     = _to_date(r.get("LeaseEnd"))
+        lease_end     = effective_end(r)
         lease_id      = r.get("LeaseID")
         rent_amt      = r.get("RentAmount")
         try:
@@ -312,7 +326,7 @@ def _build_events(
         # ── Expiration event ──────────────────────────────────────────────
         if lease_end is not None and today <= lease_end <= horizon:
             if term_name in EXPIRATION_TERMS:
-                if not _has_successor(r, leases):
+                if not _has_successor(r, leases, lease_suites):
                     rent_use, needs_sched = _rent_as_of(sched, int(lease_id), lease_end)
                     if rent_use is None:
                         rent_use = rent_amt
@@ -352,13 +366,17 @@ def _build_events(
                             lid = int(lease_id)
                             current_rent, _ = _rent_as_of(sched, lid, today)
                             if current_rent is None:
-                                current_rent = _active_predecessor_rent(leases, sched, lid, today)
+                                current_rent = _active_predecessor_rent(
+                                    leases, sched, lid, today, lease_suites,
+                                )
                             if current_rent is None:
                                 current_rent = rent_amt
 
                             scheduled_new = _rent_on_date(sched, lid, ann)
                             if scheduled_new is None:
-                                scheduled_new = _successor_starting_rent(leases, sched, lid, ann)
+                                scheduled_new = _successor_starting_rent(
+                                    leases, sched, lid, ann, lease_suites,
+                                )
                             rec_rent, rec_inc = None, None
 
                             if scheduled_new is not None and current_rent is not None:
@@ -466,13 +484,17 @@ class LeasesExpiringState(AppState):
             # Leases for active/default tenants
             leases = run_query(
                 "SELECT l.LeaseID, l.TenantID, l.PropertyID, l.SuiteID, "
-                "l.LeaseTermTypeID, l.LeaseStart, l.LeaseEnd, l.RentAmount, "
+                "l.LeaseTermTypeID, l.LeaseStart, l.LeaseEnd, l.LeaseStatus, "
+                "l.LeaseTerminationDate, l.RentAmount, "
                 "t.Suite AS TenantSuite, t.SuiteID AS TenantSuiteID "
                 "FROM Leases l "
                 "INNER JOIN Tenants t ON l.TenantID = t.TenantID "
                 "LEFT JOIN TenantStatuses ts ON t.TenantStatusID = ts.TenantStatusID "
                 "WHERE ISNULL(ts.TenantStatusName, '') IN ('Active', 'Default', '')",
                 db=db,
+            )
+            lease_suites = load_lease_suites(
+                [row["LeaseID"] for row in leases], db,
             )
 
             # Rent schedules for those leases
@@ -489,7 +511,9 @@ class LeasesExpiringState(AppState):
                         tuple(batch), db=db,
                     )
 
-            raw_events = _build_events(leases, sched, prop_map, tenant_map, term_map, today, horizon)
+            raw_events = _build_events(
+                leases, sched, prop_map, tenant_map, term_map, today, horizon, lease_suites,
+            )
 
             self.events = [
                 LeaseEventRow(

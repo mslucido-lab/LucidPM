@@ -24,11 +24,13 @@ v6.6 — Applies LeaseStart/RentDueDay proration rules and gives new leases star
 
 import reflex as rx
 import datetime
+from decimal import Decimal
 from typing import Optional
 from urllib.parse import quote
 
 from LucidPM.state import AppState, run_query, BRAND_DARK, BRAND_PRIMARY, api_base_url
 from LucidPM.components.sidebar import page_shell
+from LucidPM.lease_suites import effective_end, load_lease_suites, split_amount, suite_ids_for
 
 
 # Dynamic full-page width. Updated by sidebar.py via --lucid-sidebar-width.
@@ -314,7 +316,7 @@ class ProformaState(AppState):
 
         # ── Load suites ──
         suite_rows = run_query(
-            "SELECT SuiteLabel, SquareFeet, SuiteUseType, UnderwritingRent, SortOrder "
+            "SELECT SuiteID, SuiteLabel, SquareFeet, SuiteUseType, UnderwritingRent, SortOrder "
             "FROM PropertySuites WHERE PropertyID = ? AND IsActive = 1 "
             "ORDER BY SortOrder, SuiteLabel",
             (prop_id,), db=self.db,
@@ -328,6 +330,8 @@ class ProformaState(AppState):
         suite_sqft     = {str(r["SuiteLabel"]).strip(): r.get("SquareFeet") for r in suite_rows}
         suite_use_type = {str(r["SuiteLabel"]).strip(): str(r.get("SuiteUseType") or "Standard") for r in suite_rows}
         suite_ur       = {str(r["SuiteLabel"]).strip(): r.get("UnderwritingRent") for r in suite_rows}
+        suite_id_by_label = {str(r["SuiteLabel"]).strip(): int(r["SuiteID"]) for r in suite_rows}
+        suite_label_by_id = {int(r["SuiteID"]): str(r["SuiteLabel"]).strip() for r in suite_rows}
 
         # ── Load tenants ──
         tenant_rows = run_query(
@@ -346,7 +350,7 @@ class ProformaState(AppState):
         # date to LeaseTerminationDate so historical rent remains in the proforma
         # through the actual termination date.
         lease_rows = run_query(
-            "SELECT l.LeaseID, l.TenantID, l.LeaseStart, l.LeaseEnd, l.RentAmount, "
+            "SELECT l.LeaseID, l.TenantID, l.SuiteID, l.LeaseStart, l.LeaseEnd, l.RentAmount, "
             "l.RentDueDay, l.LeaseStatus, l.LeaseTerminationDate, "
             "COALESCE(ps.SuiteLabel, t.Suite) AS TenantSuite "
             "FROM Leases l "
@@ -356,6 +360,7 @@ class ProformaState(AppState):
             "ORDER BY l.LeaseStart, l.LeaseID",
             (prop_id,), db=self.db,
         )
+        lease_suites = load_lease_suites([l["LeaseID"] for l in lease_rows], self.db)
 
         # ── Load rent schedule ──
         schedule_rows = run_query(
@@ -376,15 +381,31 @@ class ProformaState(AppState):
         # ── Last known rent per suite (for vacant suite recommended rent) ──
         last_known_rent: dict[str, float] = {}
         for l in sorted(lease_rows, key=lambda x: to_date(x.get("LeaseStart")) or datetime.date(1900, 1, 1)):
-            suite = str(l.get("TenantSuite") or "").strip()
-            if not suite:
-                continue
             segs = lease_segments.get(int(l["LeaseID"]), [])
             if segs:
                 last_seg = sorted(segs, key=lambda s: s["start"])[-1]
                 r = float(last_seg.get("rent") or 0)
                 if r > 0:
-                    last_known_rent[suite] = r
+                    linked = lease_suites.get(int(l["LeaseID"]), [])
+                    if len(linked) > 1:
+                        amounts = split_amount(
+                            Decimal(str(r)),
+                            [Decimal(str(row["RentAllocationPct"])) for row in linked],
+                        )
+                        for row, allocated in zip(linked, amounts):
+                            label = suite_label_by_id.get(int(row["SuiteID"]))
+                            if label:
+                                last_known_rent[label] = float(allocated)
+                    else:
+                        suite_ids = suite_ids_for(l, lease_suites)
+                        for suite_id in suite_ids:
+                            label = suite_label_by_id.get(suite_id)
+                            if label:
+                                last_known_rent[label] = r
+                        if not suite_ids:
+                            label = str(l.get("TenantSuite") or "").strip()
+                            if label:
+                                last_known_rent[label] = r
 
         # ── Compute month data ──
         year = self.proforma_year
@@ -402,6 +423,7 @@ class ProformaState(AppState):
             month_total = 0.0
 
             for suite in suites:
+                sid = suite_id_by_label[suite]
                 use_type = suite_use_type.get(suite, "Standard")
                 ur = suite_ur.get(suite)
 
@@ -419,13 +441,16 @@ class ProformaState(AppState):
                     continue
 
                 tenant_ids = suite_to_tenant_ids.get(suite, set())
-                # Prefer the lease-level suite assignment. Tenant.Suite can be stale or point to a
-                # different/current suite, which can pull an old lease into the wrong suite.
                 suite_leases = [
                     l for l in lease_rows
-                    if str(l.get("TenantSuite") or "").strip() == suite
+                    if sid in suite_ids_for(l, lease_suites)
                 ]
-                # Fallback for older lease records without SuiteID / TenantSuite data.
+                legacy = [
+                    l for l in lease_rows
+                    if not suite_ids_for(l, lease_suites)
+                    and str(l.get("TenantSuite") or "").strip() == suite
+                ]
+                suite_leases += legacy
                 if not suite_leases and tenant_ids:
                     suite_leases = [l for l in lease_rows if int(l["TenantID"]) in tenant_ids]
                 suite_leases = sorted(suite_leases, key=lambda x: to_date(x.get("LeaseStart")) or datetime.date(1900, 1, 1))
@@ -436,12 +461,7 @@ class ProformaState(AppState):
                 new_commencement = False
 
                 def effective_lease_end(lease: dict) -> datetime.date:
-                    end_date = to_date(lease.get("LeaseEnd")) or datetime.date(9999, 12, 31)
-                    if str(lease.get("LeaseStatus") or "").strip() == "Terminated":
-                        term_date = to_date(lease.get("LeaseTerminationDate"))
-                        if term_date is not None:
-                            end_date = min(end_date, term_date)
-                    return end_date
+                    return effective_end(lease) or datetime.date(9999, 12, 31)
 
                 # If an executed lease starts within this month, it controls the
                 # month. Do not blend the prior lease, recommended rent, or gap
@@ -477,7 +497,19 @@ class ProformaState(AppState):
                     lid = int(l["LeaseID"])
                     segs = lease_segments.get(lid, [])
                     due_day = int(l.get("RentDueDay") or 1)
-                    amount += self._calc_month_amount(segs, year, month_num, lease_start=ls, rent_due_day=due_day)
+                    lease_month = self._calc_month_amount(
+                        segs, year, month_num, lease_start=ls, rent_due_day=due_day,
+                    )
+                    linked = lease_suites.get(lid, [])
+                    if len(linked) > 1:
+                        amounts = split_amount(
+                            Decimal(str(lease_month)),
+                            [Decimal(str(row["RentAllocationPct"])) for row in linked],
+                        )
+                        suite_index = [int(row["SuiteID"]) for row in linked].index(sid)
+                        amount += float(amounts[suite_index])
+                    else:
+                        amount += lease_month
                     curr_tenant_ids.add(str(int(l["TenantID"])))
 
                 if not active_found:
