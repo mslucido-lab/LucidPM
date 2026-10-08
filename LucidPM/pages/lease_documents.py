@@ -3512,6 +3512,8 @@ def _available_token_buttons_panel(target_id: str) -> rx.Component:
                 "{{LeaseEndOrdinal}}",
                 "{{LeaseEndMonth}}",
                 "{{LeaseEndYear}}",
+                "{{LeaseTerminationDate}}",
+                "{{LeaseTerminationDateLong}}",
                 "{{LeaseTermDescription}}",
                 "{{LeaseTermDays}}",
             ], target_id),

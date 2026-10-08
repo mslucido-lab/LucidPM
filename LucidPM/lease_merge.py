@@ -867,6 +867,9 @@ def get_lease_merge_context(tenant_id: int, lease_id: int, db: str = TEST_DB_NAM
         "LeaseEndYear": str(lease_end.year) if lease_end else "",
         # Long-form lease end date for formal clause text (e.g. "March 1, 2026")
         "LeaseEndLong": f"{lease_end.strftime('%B')} {lease_end.day}, {lease_end.year}" if lease_end else "",
+        # Early-termination date of the selected lease (Leases.LeaseTerminationDate); blank when not terminated.
+        "LeaseTerminationDate": fmt_date(lease.get("LeaseTerminationDate")),
+        "LeaseTerminationDateLong": _long_date(lease.get("LeaseTerminationDate")),
         "LeaseTermDays": str(term_days) if term_days else "",
         "BaseRent": base_rent,
         "BaseRentAmount": fmt_number(lease.get("RentAmount"), 2),

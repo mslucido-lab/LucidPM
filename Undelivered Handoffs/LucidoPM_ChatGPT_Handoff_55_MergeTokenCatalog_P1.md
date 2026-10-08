@@ -166,6 +166,8 @@ One row per token that exists on `main` today. Build the list by walking **both*
 1. Every key in the `get_lease_merge_context` return dict (the literal + the `context["X"] = …` lines + the aliases). That is the full ~121.
 2. Every `"{{Token}}"` string in `_available_token_buttons_panel` (the 86) — these carry the **GroupName** (the `_token_group` label) and rough ordering.
 
+> **Added after this doc was written (2026-10-07):** `LeaseTerminationDate` (`fmt_date(lease.get("LeaseTerminationDate"))` → `field / lease / LeaseTerminationDate / date`) and `LeaseTerminationDateLong` (`_long_date(lease.get("LeaseTerminationDate"))` → `field / lease / LeaseTerminationDate / date_long`), both in the picker's "Lease Dates / Term" group after `LeaseEndYear`. Walking the sources above picks them up automatically; listed here so the counts (now ~123 resolver keys / 88 picker strings) don't look like drift.
+
 For each token:
 
 - **`GroupName`** — from the `_token_group` it is in. Tokens in the resolver but **not** in any picker group → put in a new group **`"Uncategorized"`** (surfacing the drift is a feature; Mark re-groups later via Phase 2).
