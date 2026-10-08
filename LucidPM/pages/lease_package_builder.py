@@ -66,6 +66,7 @@ import reflex as rx
 
 from LucidPM.state import AppState, run_query, run_exec, BRAND_DARK, BRAND_PRIMARY, api_base_url
 from LucidPM.components.sidebar import page_shell
+from LucidPM.components.buttons import edit_button
 from LucidPM.document_storage import source_document_exists
 from LucidPM.pages.lease_documents_pdf import (
     DEFAULT_DOCUMENT_ROOT,
@@ -2527,7 +2528,7 @@ def generated_section_row(row: GeneratedPackageSectionRow) -> rx.Component:
         rx.table.cell(
             rx.cond(
                 row.editable,
-                rx.button("Edit", size="1", variant="soft", color_scheme="blue", on_click=LeasePackageBuilderState.start_edit_generated_section(row.package_section_id)),
+                edit_button(on_click=LeasePackageBuilderState.start_edit_generated_section(row.package_section_id)),
                 rx.text("", size="1"),
             )
         ),

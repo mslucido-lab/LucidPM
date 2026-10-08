@@ -219,6 +219,7 @@ import reflex as rx
 
 from LucidPM.state import AppState, run_query, run_exec, resolve_upload_filename, BRAND_DARK, BRAND_PRIMARY
 from LucidPM.components.sidebar import page_shell
+from LucidPM.components.buttons import delete_button, edit_button
 from LucidPM.document_storage import (
     is_blob_storage_backend,
     source_document_location,
@@ -349,6 +350,8 @@ class LeaseDocumentState(AppState):
 
     source_documents: list[SourceDocumentRow] = []
     selected_source_document_id: int = 0
+    src_edit_mode: bool = False         # True = source metadata form visible under the header
+    src_cancel_source_id: int = 0       # source to return to when a new-source form is cancelled
     selected_source_page_count: int = 0
     selected_source_path: str = ""
 
@@ -388,6 +391,8 @@ class LeaseDocumentState(AppState):
     lt_property: str = PROPERTY_GENERAL
     lt_description: str = ""
     lt_is_active: bool = True
+    lt_edit_mode: bool = False          # True = header edit form visible
+    lt_cancel_template_id: int = 0      # template to return to when a new-template form is cancelled
 
     reusable_section_labels: list[str] = ["(No default section)"]
     reusable_section_ids: list[int] = [0]
@@ -449,6 +454,24 @@ class LeaseDocumentState(AppState):
     @rx.var
     def storage_location_label(self) -> str:
         return storage_backend_label(self.storage_root)
+
+    @rx.var
+    def selected_source_summary(self) -> SourceDocumentRow:
+        """Saved values of the selected source document, for the read-only header."""
+        sid = int(self.selected_source_document_id or 0)
+        for row in self.source_documents:
+            if int(row.source_document_id) == sid:
+                return row
+        return SourceDocumentRow()
+
+    @rx.var
+    def selected_template_summary(self) -> LeaseTemplateRow:
+        """Saved values of the selected package template, for the read-only header."""
+        tid = _safe_int(self.selected_template_id)
+        for t in self.lease_templates:
+            if _safe_int(t.template_id) == tid:
+                return t
+        return LeaseTemplateRow()
 
     @rx.var
     def has_source_document(self) -> bool:
@@ -678,6 +701,9 @@ class LeaseDocumentState(AppState):
 
     def new_source_document(self):
         """Clear the Load tab form for a new source document upload."""
+        if int(self.selected_source_document_id or 0) > 0:
+            self.src_cancel_source_id = int(self.selected_source_document_id)
+        self.src_edit_mode = False
         self.selected_source_document_id = 0
         self.selected_source_page_count = 0
         self.selected_source_path = ""
@@ -1135,10 +1161,8 @@ class LeaseDocumentState(AppState):
         self.form_error = ""
         self.form_success = ""
 
-    def select_source_document(self, source_document_id: int):
-        self.selected_source_document_id = int(source_document_id)
-        self.form_error = ""
-        self.form_success = ""
+    def _load_source_metadata_fields(self) -> Optional[dict]:
+        """Read the selected source document's saved metadata into the f_* form fields."""
         rows = run_query(
             "SELECT TemplateName, PropertyID, DocumentCategory, TemplateVersion, StorageRoot, "
             "StoredFilePath, PageCount, Notes, IsActive FROM LeaseSourceDocuments "
@@ -1146,7 +1170,7 @@ class LeaseDocumentState(AppState):
             (self.selected_source_document_id,), db=self.db,
         )
         if not rows:
-            return
+            return None
         r = rows[0]
         self.f_template_name = str(r.get("TemplateName") or "")
         self.f_property = self._property_name_for_id(r.get("PropertyID"))
@@ -1156,6 +1180,16 @@ class LeaseDocumentState(AppState):
         # Do not let an older source document row change the active root.
         self.f_notes = str(r.get("Notes") or "")
         self.f_is_active = bool(r.get("IsActive"))
+        return r
+
+    def select_source_document(self, source_document_id: int):
+        self.selected_source_document_id = int(source_document_id)
+        self.src_edit_mode = False
+        self.form_error = ""
+        self.form_success = ""
+        r = self._load_source_metadata_fields()
+        if r is None:
+            return
         self.selected_source_path = str(r.get("StoredFilePath") or "")
         try:
             self.selected_source_page_count = int(r.get("PageCount") or 0)
@@ -1185,6 +1219,31 @@ class LeaseDocumentState(AppState):
         self._load_all_sections()
         self._load_reusable_section_options()
 
+    def start_edit_source_document(self):
+        """Switch the selected source document's header into edit mode."""
+        if int(self.selected_source_document_id or 0) <= 0:
+            return
+        self.form_error = ""
+        self.form_success = ""
+        self.src_edit_mode = True
+
+    def cancel_source_edit(self):
+        """Discard metadata edits (or a new-source form) and return to the read-only view.
+
+        Re-reads only the f_* metadata fields: select_source_document would also reset
+        the Library's p_* section form.
+        """
+        self.form_error = ""
+        if int(self.selected_source_document_id or 0) > 0:
+            self._load_source_metadata_fields()
+            self.src_edit_mode = False
+            return
+        sid = int(self.src_cancel_source_id or 0)
+        if sid > 0 and sid in {int(row.source_document_id) for row in self.source_documents}:
+            self.select_source_document(sid)
+        else:
+            self.new_source_document()
+
     def save_source_document_metadata(self):
         self.form_error = ""
         self.form_success = ""
@@ -1212,6 +1271,7 @@ class LeaseDocumentState(AppState):
                 db=self.db,
             )
             self.form_success = "Source document metadata saved."
+            self.src_edit_mode = False
             self._load_source_documents()
             self._load_sections()
             self._load_all_sections()
@@ -1262,6 +1322,7 @@ class LeaseDocumentState(AppState):
                 db=self.db,
             )[0]["LeaseSourceDocumentID"]
             self.selected_source_document_id = int(new_id)
+            self.src_edit_mode = False
             self.selected_source_page_count = int(pc)
             self.selected_source_path = stored_path
             self.p_start_page = "1"
@@ -1312,6 +1373,7 @@ class LeaseDocumentState(AppState):
                 db=self.db,
             )[0]["LeaseSourceDocumentID"]
             self.selected_source_document_id = int(new_id)
+            self.src_edit_mode = False
             self.selected_source_page_count = int(pc)
             self.selected_source_path = stored_path
             self.local_pdf_path = ""
@@ -1793,7 +1855,7 @@ class LeaseDocumentState(AppState):
         is_text_clause = self.p_creation_mode == "Text Clause"
         has_source_document = int(self.selected_source_document_id or 0) > 0 and not bool(self.p_is_standalone_clause)
         if not has_source_document and not is_text_clause:
-            self.form_error = "Choose a source document in the + New section form before splitting a PDF."
+            self.form_error = "Choose a source document in the + New Section form before splitting a PDF."
             return
         if not str(self.p_section_name or "").strip():
             self.form_error = "Section name is required."
@@ -2464,6 +2526,7 @@ class LeaseDocumentState(AppState):
         self.selected_template_label = self._ensure_template_label_for_id(tid)
         self.form_error = ""
         self.form_success = ""
+        self.lt_edit_mode = False
         if tid <= 0:
             self.new_lease_template()
             return
@@ -2487,6 +2550,9 @@ class LeaseDocumentState(AppState):
         self._load_template_sections()
 
     def new_lease_template(self):
+        if _safe_int(self.selected_template_id) > 0:
+            self.lt_cancel_template_id = int(self.selected_template_id)
+        self.lt_edit_mode = True
         self.selected_template_id = 0
         self.slot_template_id = 0
         self.selected_template_label = ""
@@ -2497,6 +2563,28 @@ class LeaseDocumentState(AppState):
         self.lt_is_active = True
         self.lease_template_sections = []
         self.reset_template_section_form()
+
+    def start_edit_lease_template(self):
+        """Switch the selected package template's header into edit mode."""
+        if _safe_int(self.selected_template_id) <= 0:
+            return
+        self.form_error = ""
+        self.form_success = ""
+        self.lt_edit_mode = True
+
+    def cancel_lease_template_edit(self):
+        """Discard header edits and return to the read-only view."""
+        tid = _safe_int(self.selected_template_id)
+        if tid <= 0:
+            tid = _safe_int(self.lt_cancel_template_id)
+        if tid <= 0 and self.lease_templates:
+            tid = _safe_int(self.lease_templates[0].template_id)
+        if tid > 0:
+            # Re-selecting re-reads the saved values, dropping unsaved edits.
+            self.select_lease_template(tid)
+        else:
+            self.lt_edit_mode = False
+            self.form_error = ""
 
     def save_lease_template(self):
         self.form_error = ""
@@ -2516,7 +2604,7 @@ class LeaseDocumentState(AppState):
                         now, int(self.selected_template_id),
                     ), db=self.db,
                 )
-                self.form_success = "Lease template saved."
+                success = "Lease template saved."
             else:
                 run_exec(
                     "INSERT INTO LeaseTemplates (TemplateName, PropertyID, Description, IsActive, CreatedOn, UpdatedOn) "
@@ -2534,10 +2622,13 @@ class LeaseDocumentState(AppState):
                 self.slot_template_id = _safe_int(self.selected_template_id)
                 self.selected_template_label = self._ensure_template_label_for_id(self.selected_template_id)
                 self.lt_template_mode = "edit"
-                self.form_success = "Lease template created."
+                success = "Lease template created."
             self._load_lease_templates()
             if self.selected_template_id:
+                # Returns the header to view mode; set the message afterwards
+                # because select_lease_template clears form_success.
                 self.select_lease_template(self.selected_template_id)
+            self.form_success = success
         except Exception as ex:
             self.form_error = f"Could not save lease template: {ex}"
 
@@ -2563,16 +2654,6 @@ class LeaseDocumentState(AppState):
         self.sec_section_type = "Base Lease"
         self.sec_inclusion_mode = "Required"
         self.sec_is_active = True
-
-    def start_new_template_section_for_template(self, template_id: int):
-        """Select a package template and start a new slot for that template."""
-        tid = _safe_int(template_id)
-        if tid <= 0:
-            self.form_error = "Select a lease package template first."
-            return
-        self.select_lease_template(tid)
-        self.slot_template_id = tid
-        self.reset_template_section_form()
 
     def edit_template_section(self, section_id: int):
         self.form_error = ""
@@ -2938,29 +3019,30 @@ def source_document_card(row: SourceDocumentRow) -> rx.Component:
             rx.hstack(
                 rx.text(row.template_name, size="2", weight="bold", color=BRAND_DARK),
                 rx.spacer(),
-                rx.badge(row.active, color_scheme=rx.cond(row.active == "Yes", "green", "gray"), variant="soft"),
+                rx.cond(
+                    row.active == "Yes",
+                    rx.badge("Active", color_scheme="green", variant="soft"),
+                    rx.badge("Inactive", color_scheme="gray", variant="soft"),
+                ),
                 width="100%",
                 align="center",
             ),
             rx.text(row.category + " - " + row.page_count + " pages", size="1", color="#666"),
-            rx.hstack(
-                rx.button("Edit", size="1", variant="soft", color_scheme="gray", on_click=LeaseDocumentState.select_source_document(row.source_document_id)),
-                rx.button("Split ->", size="1", variant="soft", color_scheme="blue", on_click=LeaseDocumentState.start_new_section_from_source(row.source_document_id)),
-                spacing="2",
-            ),
-            spacing="2",
+            spacing="1",
             align_items="start",
             width="100%",
         ),
+        on_click=LeaseDocumentState.select_source_document(row.source_document_id),
         style=rx.cond(
             LeaseDocumentState.selected_source_document_id == row.source_document_id,
-            {"background": "#f0f4ff", "border": "1px solid #c5d0f0", "border_left": f"4px solid {BRAND_PRIMARY}", "border_radius": "10px", "padding": "10px", "width": "100%"},
-            {"background": "white", "border": "1px solid #e5e7eb", "border_left": "4px solid transparent", "border_radius": "10px", "padding": "10px", "width": "100%"},
+            {"background": "#f0f4ff", "border": "1px solid #c5d0f0", "border_left": f"4px solid {BRAND_PRIMARY}", "border_radius": "10px", "padding": "10px", "width": "100%", "cursor": "pointer"},
+            {"background": "white", "border": "1px solid #e5e7eb", "border_left": "4px solid transparent", "border_radius": "10px", "padding": "10px", "width": "100%", "cursor": "pointer", "_hover": {"background": "#f8fafc"}},
         ),
     )
 
 
 def section_row(row: SectionRow) -> rx.Component:
+    """Load tab: one section cut from the selected source. Clicking the row opens it in the Library."""
     return rx.table.row(
         rx.table.cell(rx.text(row.sort_order, size="2")),
         rx.table.cell(rx.text(row.section_type, size="2")),
@@ -2976,7 +3058,8 @@ def section_row(row: SectionRow) -> rx.Component:
                 size="1",
                 variant="soft",
                 color_scheme=rx.cond(row.reusable == "Yes", "green", "gray"),
-                on_click=LeaseDocumentState.toggle_section_reusable(row.section_id),
+                # Toggle in place; don't also open the row.
+                on_click=LeaseDocumentState.toggle_section_reusable(row.section_id).stop_propagation,
             )
         ),
         rx.table.cell(
@@ -2985,7 +3068,7 @@ def section_row(row: SectionRow) -> rx.Component:
                 size="1",
                 variant="soft",
                 color_scheme=rx.cond(row.active == "Yes", "green", "gray"),
-                on_click=LeaseDocumentState.toggle_section_active(row.section_id),
+                on_click=LeaseDocumentState.toggle_section_active(row.section_id).stop_propagation,
             )
         ),
         rx.table.cell(
@@ -2995,17 +3078,11 @@ def section_row(row: SectionRow) -> rx.Component:
                 rx.badge("PDF only", color_scheme="gray", variant="soft"),
             )
         ),
-        rx.table.cell(
-            rx.hstack(
-                rx.button("Edit", size="1", variant="soft", color_scheme="blue", on_click=LeaseDocumentState.open_section_in_library(row.section_id)),
-                rx.button("Delete", size="1", variant="soft", color_scheme="red", on_click=LeaseDocumentState.delete_section(row.section_id)),
-                spacing="2",
-            )
-        ),
+        on_click=LeaseDocumentState.open_section_in_library(row.section_id),
         style=rx.cond(
             LeaseDocumentState.editing_section_id == row.section_id,
-            {"background": "#fff8e1"},
-            {"background": "white"},
+            {"background": "#fff8e1", "cursor": "pointer"},
+            {"background": "white", "cursor": "pointer"},
         ),
     )
 
@@ -3048,37 +3125,97 @@ def lease_template_row(row: LeaseTemplateRow) -> rx.Component:
         rx.table.cell(rx.text(row.template_name, size="2", weight="bold")),
         rx.table.cell(rx.text(row.property_name, size="2")),
         rx.table.cell(rx.text(row.section_count.to_string(), size="2")),
-        rx.table.cell(
-            rx.cond(
-                row.active == "Yes",
-                rx.badge("Active", color_scheme="green", variant="soft"),
-                rx.badge("Inactive", color_scheme="gray", variant="soft"),
-            )
-        ),
-        rx.table.cell(
-            rx.hstack(
-                rx.button(
-                    "Select",
-                    size="1",
-                    variant="soft",
-                    color_scheme="blue",
-                    on_click=LeaseDocumentState.select_lease_template(row.template_id),
-                ),
-                rx.button(
-                    "Add Slot",
-                    size="1",
-                    variant="soft",
-                    color_scheme="green",
-                    on_click=LeaseDocumentState.start_new_template_section_for_template(row.template_id),
-                ),
-                spacing="2",
-            )
-        ),
+        on_click=LeaseDocumentState.select_lease_template(row.template_id),
         style=rx.cond(
             LeaseDocumentState.selected_template_id == row.template_id,
-            {"background": "#f0f4ff"},
-            {"background": "white"},
+            {"background": "#f0f4ff", "cursor": "pointer"},
+            {"background": "white", "cursor": "pointer"},
         ),
+    )
+
+
+def _record_header_card(icon: str, title_row: rx.Component, subtitle: rx.Component, actions: rx.Component) -> rx.Component:
+    """Compact selected-record header: icon, title + badges on one line, subtitle, actions pinned top-right."""
+    return rx.box(
+        rx.hstack(
+            rx.box(
+                rx.icon(icon, color="white", size=20),
+                style={
+                    "width": "40px", "height": "40px", "border_radius": "50%",
+                    "background": BRAND_PRIMARY, "display": "flex",
+                    "align_items": "center", "justify_content": "center", "flex_shrink": "0",
+                },
+            ),
+            rx.vstack(
+                title_row,
+                subtitle,
+                spacing="1", align_items="start", width="100%",
+                style={"min_width": "0", "flex": "1 1 0"},
+            ),
+            # No wrap: keeps the action buttons pinned top-right.
+            rx.box(actions, style={"flex_shrink": "0", "align_self": "flex-start"}),
+            align="center", spacing="3", width="100%",
+            style={"min_width": "0"},
+        ),
+        style={
+            "background": "white", "border": "1px solid #dde3f0",
+            "border_left": f"5px solid {BRAND_PRIMARY}", "border_radius": "12px",
+            "padding": "10px 16px",
+            "box_shadow": "0 1px 4px rgba(74,99,168,0.07)",
+            "width": "100%", "max_width": "100%", "box_sizing": "border-box",
+        },
+    )
+
+
+def lease_template_header_card() -> rx.Component:
+    """Read-only header for the selected package template (mirrors the tenant header)."""
+    summary = LeaseDocumentState.selected_template_summary
+    return _record_header_card(
+        "file-text",
+        rx.hstack(
+            rx.text(summary.template_name, weight="bold", size="4", color=BRAND_DARK),
+            rx.cond(
+                summary.active == "Yes",
+                rx.badge("Active", color_scheme="green", variant="soft"),
+                rx.badge("Inactive", color_scheme="gray", variant="soft"),
+            ),
+            rx.badge(summary.property_name, color_scheme="blue", variant="soft"),
+            rx.badge(summary.section_count.to_string() + " section slot(s)", color_scheme="gray", variant="soft"),
+            align="center", spacing="2", wrap="wrap",
+        ),
+        rx.cond(
+            summary.description != "",
+            rx.text(summary.description, size="2", color="#666"),
+            rx.text("No description.", size="2", color="#999"),
+        ),
+        rx.cond(
+            LeaseDocumentState.lt_edit_mode,
+            rx.fragment(),
+            edit_button(on_click=LeaseDocumentState.start_edit_lease_template),
+        ),
+    )
+
+
+def lease_template_edit_form() -> rx.Component:
+    """Package template create/edit form, shown only in edit mode."""
+    return rx.card(
+        rx.vstack(
+            rx.text(rx.cond(LeaseDocumentState.selected_template_id > 0, "Edit package template", "New package template"), size="3", weight="bold", color=BRAND_DARK),
+            rx.grid(
+                rx.vstack(rx.text("Template name", size="1", color="#666"), rx.input(value=LeaseDocumentState.lt_template_name, on_change=LeaseDocumentState.set_lt_template_name, placeholder="Broadway Modified-Gross", width="100%"), spacing="1", width="100%"),
+                rx.vstack(rx.text("Property", size="1", color="#666"), rx.select(LeaseDocumentState.property_names, value=LeaseDocumentState.lt_property, on_change=LeaseDocumentState.set_lt_property, width="100%"), spacing="1", width="100%"),
+                columns="2", spacing="3", width="100%",
+            ),
+            rx.vstack(rx.text("Description", size="1", color="#666"), rx.text_area(value=LeaseDocumentState.lt_description, on_change=LeaseDocumentState.set_lt_description, width="100%", height="60px"), spacing="1", width="100%"),
+            rx.checkbox("Active", checked=LeaseDocumentState.lt_is_active, on_change=LeaseDocumentState.set_lt_is_active),
+            rx.hstack(
+                rx.button(rx.cond(LeaseDocumentState.selected_template_id > 0, "Save Template", "Create Template"), on_click=LeaseDocumentState.save_lease_template, color_scheme="blue"),
+                rx.button("Cancel", on_click=LeaseDocumentState.cancel_lease_template_edit, variant="soft", color_scheme="gray"),
+                spacing="3",
+            ),
+            spacing="3", width="100%", align_items="start",
+        ),
+        width="100%",
     )
 
 
@@ -3428,6 +3565,140 @@ def _available_token_buttons_panel(target_id: str) -> rx.Component:
         style={"background": "#f8f9fc", "border": "1px solid #e1e5ee", "border_radius": "8px", "padding": "10px", "width": "100%"},
     )
 
+def _source_header_card() -> rx.Component:
+    """Read-only header for the selected source document."""
+    summary = LeaseDocumentState.selected_source_summary
+    return _record_header_card(
+        "file",
+        rx.hstack(
+            rx.text(summary.template_name, size="4", weight="bold", color=BRAND_DARK),
+            rx.cond(
+                summary.active == "Yes",
+                rx.badge("Active", color_scheme="green", variant="soft"),
+                rx.badge("Inactive", color_scheme="gray", variant="soft"),
+            ),
+            align="center", spacing="2", wrap="wrap",
+        ),
+        rx.hstack(
+            rx.badge(summary.category, color_scheme="blue", variant="soft"),
+            rx.badge(summary.property_name, color_scheme="gray", variant="soft"),
+            rx.cond(summary.version != "", rx.badge("v" + summary.version, color_scheme="gray", variant="soft"), rx.fragment()),
+            rx.text(
+                summary.page_count + " pages  ·  " + summary.file_name + "  ·  Uploaded " + summary.uploaded_on + "  ·  ID " + summary.source_document_id.to_string(),
+                size="1", color="#666",
+            ),
+            align="center", spacing="2", wrap="wrap",
+        ),
+        rx.hstack(
+            rx.cond(
+                LeaseDocumentState.src_edit_mode,
+                rx.fragment(),
+                edit_button(on_click=LeaseDocumentState.start_edit_source_document),
+            ),
+            rx.button("Close", size="1", variant="ghost", color_scheme="gray", on_click=LeaseDocumentState.new_source_document),
+            spacing="2", align="center",
+        ),
+    )
+
+
+def _source_metadata_fields() -> rx.Component:
+    """Source document metadata inputs, shared by the new-upload and edit forms."""
+    return rx.vstack(
+        rx.grid(
+            rx.vstack(rx.text("Template name", size="1", color="#666"), rx.input(value=LeaseDocumentState.f_template_name, on_change=LeaseDocumentState.set_f_template_name, placeholder="Broadway Core Lease", width="100%"), spacing="1"),
+            rx.vstack(rx.text("Property", size="1", color="#666"), rx.select(LeaseDocumentState.property_names, value=LeaseDocumentState.f_property, on_change=LeaseDocumentState.set_f_property, width="100%"), spacing="1"),
+            rx.vstack(rx.text("Category", size="1", color="#666"), rx.select(DOCUMENT_CATEGORIES, value=LeaseDocumentState.f_document_category, on_change=LeaseDocumentState.set_f_document_category, width="100%"), spacing="1"),
+            rx.vstack(rx.text("Version", size="1", color="#666"), rx.input(value=LeaseDocumentState.f_template_version, on_change=LeaseDocumentState.set_f_template_version, width="100%"), spacing="1"),
+            columns="4", spacing="3", width="100%",
+        ),
+        rx.vstack(rx.text("Notes", size="1", color="#666"), rx.text_area(value=LeaseDocumentState.f_notes, on_change=LeaseDocumentState.set_f_notes, width="100%", height="90px"), spacing="1", width="100%"),
+        rx.checkbox("Active", checked=LeaseDocumentState.f_is_active, on_change=LeaseDocumentState.set_f_is_active),
+        spacing="3", width="100%", align_items="start",
+    )
+
+
+def _source_edit_form() -> rx.Component:
+    return rx.card(
+        rx.vstack(
+            rx.text("Edit source document", size="3", weight="bold", color=BRAND_DARK),
+            _source_metadata_fields(),
+            rx.hstack(
+                rx.button("Save Metadata", on_click=LeaseDocumentState.save_source_document_metadata, color_scheme="blue"),
+                rx.button("Cancel", on_click=LeaseDocumentState.cancel_source_edit, variant="soft", color_scheme="gray"),
+                spacing="3",
+            ),
+            spacing="3", width="100%", align_items="start",
+        ),
+        width="100%",
+    )
+
+
+def _source_new_upload_form() -> rx.Component:
+    """New source document: metadata + PDF upload. Uploading creates the record."""
+    return rx.card(
+        rx.vstack(
+            rx.text("New source document", size="3", weight="bold", color=BRAND_DARK),
+            rx.box(
+                rx.hstack(
+                    rx.text("Files stored in:", size="1", color="#666"),
+                    rx.cond(
+                        LeaseDocumentState.using_blob_storage,
+                        rx.text(LeaseDocumentState.storage_location_label, size="1", weight="bold", color=BRAND_DARK),
+                        rx.text(LeaseDocumentState.storage_root, size="1", weight="bold", color=BRAND_DARK),
+                    ),
+                    rx.spacer(),
+                    rx.cond(
+                        LeaseDocumentState.using_blob_storage,
+                        rx.box(),
+                        rx.badge("Edit in Settings", color_scheme="gray", variant="soft"),
+                    ),
+                    width="100%",
+                    align="center",
+                ),
+                style={"background": "#f8f9fc", "border": "1px solid #e1e5ee", "border_radius": "8px", "padding": "10px", "width": "100%"},
+            ),
+            _source_metadata_fields(),
+            rx.divider(),
+            rx.text("Source PDF", size="2", weight="bold", color=BRAND_DARK),
+            rx.upload(rx.vstack(rx.button("Choose PDF", color_scheme="blue", variant="outline"), rx.text("Drop a source lease PDF here or click to choose.", size="2", color="#666"), spacing="2", align="center"), id="lease_template_pdf_upload", accept={"application/pdf": [".pdf"]}, max_files=1, border=f"1px dashed {BRAND_PRIMARY}", padding="18px", border_radius="8px", width="100%"),
+            rx.box(rx.text("Selected file", size="1", color="#666"), rx.cond(rx.selected_files("lease_template_pdf_upload"), rx.foreach(rx.selected_files("lease_template_pdf_upload"), lambda file_name: rx.text(file_name, size="2", weight="bold", color=BRAND_DARK)), rx.text("No file selected yet.", size="2", color="#777")), style={"background": "#f8f9fc", "border": "1px solid #e1e5ee", "border_radius": "8px", "padding": "10px", "width": "100%"}),
+            rx.hstack(
+                rx.button("Upload Source PDF", on_click=LeaseDocumentState.handle_upload(rx.upload_files(upload_id="lease_template_pdf_upload")), color_scheme="blue"),
+                rx.button("Cancel", on_click=LeaseDocumentState.cancel_source_edit, variant="soft", color_scheme="gray"),
+                spacing="3",
+            ),
+            rx.cond(LeaseDocumentState.developer_tools_enabled, rx.vstack(rx.divider(), rx.text("Developer local test import", size="2", weight="bold", color="#555"), rx.hstack(rx.input(value=LeaseDocumentState.local_pdf_path, on_change=LeaseDocumentState.set_local_pdf_path, placeholder=r"C:\path\to\lease.pdf", width="100%"), rx.button("Import Path", on_click=LeaseDocumentState.import_local_pdf_for_testing, variant="outline", color_scheme="blue"), width="100%"), spacing="2", width="100%")),
+            spacing="3", width="100%", align_items="start",
+        ),
+        width="100%",
+    )
+
+
+def _source_sections_card() -> rx.Component:
+    return rx.card(
+        rx.vstack(
+            rx.hstack(
+                rx.text("Sections from this source", size="3", weight="bold", color=BRAND_DARK),
+                rx.spacer(),
+                rx.button("+ New Section", size="1", variant="outline", color_scheme="blue", on_click=LeaseDocumentState.start_new_section_from_source(LeaseDocumentState.selected_source_document_id)),
+                width="100%", align="center",
+            ),
+            rx.text("Click a section to open it in the Section Library.", size="2", color="#666"),
+            rx.cond(
+                LeaseDocumentState.sections.length() > 0,
+                rx.table.root(
+                    rx.table.header(rx.table.row(rx.table.column_header_cell("Sort"), rx.table.column_header_cell("Type"), rx.table.column_header_cell("Code"), rx.table.column_header_cell("Name"), rx.table.column_header_cell("Article"), rx.table.column_header_cell("Display Label"), rx.table.column_header_cell("Tag"), rx.table.column_header_cell("Pages"), rx.table.column_header_cell("Reusable"), rx.table.column_header_cell("Active"), rx.table.column_header_cell("Content"))),
+                    rx.table.body(rx.foreach(LeaseDocumentState.sections, section_row)),
+                    width="100%",
+                ),
+                rx.callout.root(rx.callout.text("No sections have been created from this source yet."), color_scheme="gray", width="100%"),
+            ),
+            spacing="3", width="100%", align_items="start",
+        ),
+        width="100%",
+    )
+
+
 def _tab_load() -> rx.Component:
     """Tab 1 - Load: upload source PDFs and edit source metadata."""
     return rx.vstack(
@@ -3439,11 +3710,10 @@ def _tab_load() -> rx.Component:
                     rx.hstack(
                         rx.text("Source documents", size="3", weight="bold", color=BRAND_DARK),
                         rx.spacer(),
-                        rx.button("New Source Document", size="1", variant="soft", color_scheme="blue", on_click=LeaseDocumentState.new_source_document),
+                        rx.button("+ New Source", size="1", variant="outline", color_scheme="blue", on_click=LeaseDocumentState.new_source_document),
                         width="100%",
                         align="center",
                     ),
-                    rx.text("Select a source to edit metadata or open it in the Section Library splitter.", size="1", color="#666"),
                     rx.cond(
                         LeaseDocumentState.source_documents.length() > 0,
                         rx.vstack(rx.foreach(LeaseDocumentState.source_documents, source_document_card), spacing="2", width="100%"),
@@ -3458,82 +3728,17 @@ def _tab_load() -> rx.Component:
             ),
             rx.box(rx.box(style={"width": "4px", "height": "44px", "background": "#c5d0f0", "border_radius": "2px"}), id="lease-doc-load-resizer", style={"width": "12px", "min_width": "12px", "align_self": "stretch", "cursor": "col-resize", "display": "flex", "align_items": "center", "justify_content": "center", "border_radius": "4px", "flex_shrink": "0", "_hover": {"background": "#f0f4ff"}}),
             rx.box(
-                rx.vstack(
-                    rx.card(
-                        rx.vstack(
-                            rx.hstack(
-                                rx.text(rx.cond(LeaseDocumentState.selected_source_document_id > 0, "Source document metadata", "New source document"), size="3", weight="bold", color=BRAND_DARK),
-                                rx.spacer(),
-                                rx.cond(LeaseDocumentState.selected_source_document_id > 0, rx.badge("Editing source #" + LeaseDocumentState.selected_source_document_id.to_string(), color_scheme="blue", variant="soft"), rx.badge("New upload", color_scheme="gray", variant="soft")),
-                                width="100%",
-                                align="center",
-                            ),
-                            rx.box(
-                                rx.hstack(
-                                    rx.text("Files stored in:", size="1", color="#666"),
-                                    rx.cond(
-                                        LeaseDocumentState.using_blob_storage,
-                                        rx.text(LeaseDocumentState.storage_location_label, size="1", weight="bold", color=BRAND_DARK),
-                                        rx.text(LeaseDocumentState.storage_root, size="1", weight="bold", color=BRAND_DARK),
-                                    ),
-                                    rx.spacer(),
-                                    rx.cond(
-                                        LeaseDocumentState.using_blob_storage,
-                                        rx.box(),
-                                        rx.badge("Edit in Settings", color_scheme="gray", variant="soft"),
-                                    ),
-                                    width="100%",
-                                    align="center",
-                                ),
-                                style={"background": "#f8f9fc", "border": "1px solid #e1e5ee", "border_radius": "8px", "padding": "10px", "width": "100%"},
-                            ),
-                            rx.grid(
-                                rx.vstack(rx.text("Template name", size="1", color="#666"), rx.input(value=LeaseDocumentState.f_template_name, on_change=LeaseDocumentState.set_f_template_name, placeholder="Broadway Core Lease", width="100%"), spacing="1"),
-                                rx.vstack(rx.text("Property", size="1", color="#666"), rx.select(LeaseDocumentState.property_names, value=LeaseDocumentState.f_property, on_change=LeaseDocumentState.set_f_property, width="100%"), spacing="1"),
-                                rx.vstack(rx.text("Category", size="1", color="#666"), rx.select(DOCUMENT_CATEGORIES, value=LeaseDocumentState.f_document_category, on_change=LeaseDocumentState.set_f_document_category, width="100%"), spacing="1"),
-                                rx.vstack(rx.text("Version", size="1", color="#666"), rx.input(value=LeaseDocumentState.f_template_version, on_change=LeaseDocumentState.set_f_template_version, width="100%"), spacing="1"),
-                                columns="4", spacing="3", width="100%",
-                            ),
-                            rx.vstack(rx.text("Notes", size="1", color="#666"), rx.text_area(value=LeaseDocumentState.f_notes, on_change=LeaseDocumentState.set_f_notes, width="100%", height="90px"), spacing="1", width="100%"),
-                            rx.checkbox("Active", checked=LeaseDocumentState.f_is_active, on_change=LeaseDocumentState.set_f_is_active),
-                            rx.hstack(rx.button("Save Metadata", on_click=LeaseDocumentState.save_source_document_metadata, variant="soft", color_scheme="green"), rx.button("Clear / New", on_click=LeaseDocumentState.new_source_document, variant="soft", color_scheme="gray"), spacing="3"),
-                            spacing="3", width="100%", align_items="start",
-                        ), width="100%",
+                rx.cond(
+                    LeaseDocumentState.selected_source_document_id > 0,
+                    rx.vstack(
+                        _source_header_card(),
+                        rx.cond(LeaseDocumentState.src_edit_mode, _source_edit_form()),
+                        _source_sections_card(),
+                        spacing="3", width="100%", align_items="stretch",
                     ),
-                    rx.card(
-                        rx.vstack(
-                            rx.text("Upload source PDF", size="3", weight="bold", color=BRAND_DARK),
-                            rx.text(rx.cond(LeaseDocumentState.selected_source_document_id > 0, "Uploading a new PDF creates a new source document. Existing split sections are not replaced automatically.", "Upload a source PDF, then use Split -> to define reusable sections."), size="2", color="#666"),
-                            rx.upload(rx.vstack(rx.button("Choose PDF", color_scheme="blue", variant="soft"), rx.text("Drop a source lease PDF here or click to choose.", size="2", color="#666"), spacing="2", align="center"), id="lease_template_pdf_upload", accept={"application/pdf": [".pdf"]}, max_files=1, border=f"1px dashed {BRAND_PRIMARY}", padding="18px", border_radius="8px", width="100%"),
-                            rx.box(rx.text("Selected file", size="1", color="#666"), rx.cond(rx.selected_files("lease_template_pdf_upload"), rx.foreach(rx.selected_files("lease_template_pdf_upload"), lambda file_name: rx.text(file_name, size="2", weight="bold", color=BRAND_DARK)), rx.text("No file selected yet.", size="2", color="#777")), style={"background": "#f8f9fc", "border": "1px solid #e1e5ee", "border_radius": "8px", "padding": "10px", "width": "100%"}),
-                            rx.button("Upload Source PDF", on_click=LeaseDocumentState.handle_upload(rx.upload_files(upload_id="lease_template_pdf_upload")), color_scheme="blue"),
-                            rx.cond(LeaseDocumentState.developer_tools_enabled, rx.vstack(rx.divider(), rx.text("Developer local test import", size="2", weight="bold", color="#555"), rx.hstack(rx.input(value=LeaseDocumentState.local_pdf_path, on_change=LeaseDocumentState.set_local_pdf_path, placeholder=r"C:\path\to\lease.pdf", width="100%"), rx.button("Import Path", on_click=LeaseDocumentState.import_local_pdf_for_testing, variant="soft"), width="100%"), spacing="2", width="100%")),
-                            spacing="3", width="100%", align_items="start",
-                        ), width="100%",
-                    ),
-                    rx.card(
-                        rx.vstack(
-                            rx.hstack(
-                                rx.text("Sections for selected source", size="3", weight="bold", color=BRAND_DARK),
-                                rx.spacer(),
-                                rx.cond(LeaseDocumentState.selected_source_document_id > 0, rx.button("Split / Add Section", size="1", variant="soft", color_scheme="blue", on_click=LeaseDocumentState.start_new_section_from_source(LeaseDocumentState.selected_source_document_id)), rx.fragment()),
-                                width="100%", align="center",
-                            ),
-                            rx.text("Shows only the sections created from the selected source document. Use the Section Library tab to see all sections across all source documents.", size="2", color="#666"),
-                            rx.cond(
-                                LeaseDocumentState.sections.length() > 0,
-                                rx.table.root(
-                                    rx.table.header(rx.table.row(rx.table.column_header_cell("Sort"), rx.table.column_header_cell("Type"), rx.table.column_header_cell("Code"), rx.table.column_header_cell("Name"), rx.table.column_header_cell("Article"), rx.table.column_header_cell("Display Label"), rx.table.column_header_cell("Tag"), rx.table.column_header_cell("Pages"), rx.table.column_header_cell("Reusable"), rx.table.column_header_cell("Active"), rx.table.column_header_cell("Content"), rx.table.column_header_cell("Actions"))),
-                                    rx.table.body(rx.foreach(LeaseDocumentState.sections, section_row)),
-                                    width="100%",
-                                ),
-                                rx.callout.root(rx.callout.text("No sections have been created for the selected source document yet."), color_scheme="gray", width="100%"),
-                            ),
-                            spacing="3", width="100%", align_items="start",
-                        ), width="100%",
-                    ),
-                    spacing="4", width="100%",
-                ), style={"flex": "1", "min_width": "0"},
+                    _source_new_upload_form(),
+                ),
+                style={"flex": "1", "min_width": "0"},
             ),
             spacing="3", width="100%", align_items="stretch",
         ),
@@ -3579,52 +3784,44 @@ def _library_list_header() -> rx.Component:
 
 
 def _library_header_bar() -> rx.Component:
-    return rx.box(
-        rx.vstack(
-            rx.hstack(
-                rx.text(rx.cond(LeaseDocumentState.p_section_name != "", LeaseDocumentState.p_section_name, "Section"), size="4", weight="bold", color=BRAND_DARK),
-                rx.spacer(),
-                rx.cond(
-                    LeaseDocumentState.library_detail_mode == "view",
-                    rx.hstack(
-                        rx.button("Edit", size="1", variant="soft", color_scheme="blue", on_click=LeaseDocumentState.start_library_edit),
-                        rx.button("Delete", size="1", variant="soft", color_scheme="red", on_click=LeaseDocumentState.delete_section(LeaseDocumentState.editing_section_id)),
-                        rx.button("Close", size="1", variant="ghost", color_scheme="gray", on_click=LeaseDocumentState.close_library_section),
-                        spacing="2",
-                    ),
-                    rx.hstack(
-                        rx.button("Save Section", size="1", color_scheme="purple", on_click=LeaseDocumentState.save_library_section),
-                        rx.button("Cancel", size="1", variant="soft", color_scheme="gray", on_click=LeaseDocumentState.cancel_library_edit),
-                        spacing="2",
-                    ),
-                ),
-                width="100%",
-                align="center",
-            ),
-            rx.hstack(
-                rx.cond(
-                    LeaseDocumentState.p_section_type != "",
-                    rx.badge(
-                        LeaseDocumentState.p_section_type,
-                        color_scheme=rx.cond(LeaseDocumentState.p_section_type == "Base Lease", "blue", rx.cond(LeaseDocumentState.p_section_type == "Addendum", "purple", "gray")),
-                        variant="soft",
-                    ),
-                    rx.fragment(),
-                ),
-                rx.cond(LeaseDocumentState.p_clause_tag != "", rx.badge("Tag: " + LeaseDocumentState.p_clause_tag, color_scheme="cyan", variant="soft"), rx.fragment()),
-                rx.cond(LeaseDocumentState.selected_library_group != "", rx.badge("Group: " + LeaseDocumentState.selected_library_group, color_scheme="gray", variant="soft"), rx.fragment()),
-                rx.button(rx.cond(LeaseDocumentState.p_is_active, "Active", "Inactive"), size="1", variant="soft", color_scheme=rx.cond(LeaseDocumentState.p_is_active, "green", "gray"), on_click=LeaseDocumentState.toggle_section_active(LeaseDocumentState.editing_section_id)),
-                rx.button(rx.cond(LeaseDocumentState.p_is_reusable, "Reusable", "Hidden"), size="1", variant="soft", color_scheme=rx.cond(LeaseDocumentState.p_is_reusable, "green", "gray"), on_click=LeaseDocumentState.toggle_section_reusable(LeaseDocumentState.editing_section_id)),
-                spacing="1",
-                wrap="wrap",
-                align="center",
-            ),
-            rx.text(LeaseDocumentState.selected_library_meta, size="1", color="#777"),
-            spacing="2",
-            align_items="start",
-            width="100%",
+    """Selected-section header (same card as the package template header)."""
+    return _record_header_card(
+        "scroll-text",
+        rx.hstack(
+            rx.text(rx.cond(LeaseDocumentState.p_section_name != "", LeaseDocumentState.p_section_name, "Section"), size="4", weight="bold", color=BRAND_DARK),
+            rx.button(rx.cond(LeaseDocumentState.p_is_active, "Active", "Inactive"), size="1", variant="soft", color_scheme=rx.cond(LeaseDocumentState.p_is_active, "green", "gray"), on_click=LeaseDocumentState.toggle_section_active(LeaseDocumentState.editing_section_id)),
+            rx.button(rx.cond(LeaseDocumentState.p_is_reusable, "Reusable", "Hidden"), size="1", variant="soft", color_scheme=rx.cond(LeaseDocumentState.p_is_reusable, "green", "gray"), on_click=LeaseDocumentState.toggle_section_reusable(LeaseDocumentState.editing_section_id)),
+            align="center", spacing="2", wrap="wrap",
         ),
-        style={"background": "#f8f9fc", "border": "1px solid #e1e5ee", "border_radius": "10px", "padding": "12px 14px", "width": "100%"},
+        rx.hstack(
+            rx.cond(
+                LeaseDocumentState.p_section_type != "",
+                rx.badge(
+                    LeaseDocumentState.p_section_type,
+                    color_scheme=rx.cond(LeaseDocumentState.p_section_type == "Base Lease", "blue", rx.cond(LeaseDocumentState.p_section_type == "Addendum", "purple", "gray")),
+                    variant="soft",
+                ),
+                rx.fragment(),
+            ),
+            rx.cond(LeaseDocumentState.p_clause_tag != "", rx.badge("Tag: " + LeaseDocumentState.p_clause_tag, color_scheme="cyan", variant="soft"), rx.fragment()),
+            rx.cond(LeaseDocumentState.selected_library_group != "", rx.badge("Group: " + LeaseDocumentState.selected_library_group, color_scheme="gray", variant="soft"), rx.fragment()),
+            rx.text(LeaseDocumentState.selected_library_meta, size="1", color="#666"),
+            align="center", spacing="2", wrap="wrap",
+        ),
+        rx.cond(
+            LeaseDocumentState.library_detail_mode == "view",
+            rx.hstack(
+                edit_button(on_click=LeaseDocumentState.start_library_edit),
+                delete_button(on_click=LeaseDocumentState.delete_section(LeaseDocumentState.editing_section_id)),
+                rx.button("Close", size="1", variant="ghost", color_scheme="gray", on_click=LeaseDocumentState.close_library_section),
+                spacing="2", align="center",
+            ),
+            rx.hstack(
+                rx.button("Save Section", size="1", color_scheme="blue", on_click=LeaseDocumentState.save_library_section),
+                rx.button("Cancel", size="1", variant="soft", color_scheme="gray", on_click=LeaseDocumentState.cancel_library_edit),
+                spacing="2", align="center",
+            ),
+        ),
     )
 
 
@@ -3884,7 +4081,7 @@ def _tab_library() -> rx.Component:
     left_panel = rx.box(
         rx.vstack(
             rx.hstack(rx.text("Section Library", size="3", weight="bold", color=BRAND_DARK), rx.spacer(), rx.badge(LeaseDocumentState.library_result_count, color_scheme="blue", variant="soft"), width="100%", align="center"),
-            rx.button("+ New section", on_click=LeaseDocumentState.start_new_section("text"), size="1", variant="soft", color_scheme="green", width="100%"),
+            rx.button("+ New Section", on_click=LeaseDocumentState.start_new_section("text"), size="1", variant="outline", color_scheme="blue", width="100%"),
             rx.input(value=LeaseDocumentState.library_search, on_change=LeaseDocumentState.set_library_search, placeholder="Search name, label, tag, source, content", width="100%"),
             rx.grid(
                 rx.vstack(rx.text("Type", size="1", color="#666"), rx.select(["All"] + SECTION_TYPES, value=LeaseDocumentState.library_type_filter, on_change=LeaseDocumentState.set_library_type_filter, width="100%"), spacing="1"),
@@ -3929,7 +4126,7 @@ def _tab_library() -> rx.Component:
                     width="100%",
                     height="100%",
                 ),
-                rx.box(rx.text("Select a section from the list, or click + New section.", size="2", color="#888"), style={"padding": "24px"}),
+                rx.box(rx.text("Select a section from the list, or click + New Section.", size="2", color="#888"), style={"padding": "24px"}),
             ),
         ),
         style={"flex": "1", "min_width": "0", "overflow": "auto", "height": "calc(100vh - 260px)"},
@@ -3947,8 +4144,8 @@ def _tab_templates() -> rx.Component:
     """Tab 4 - Package Templates: build and manage lease package templates."""
     left_panel = rx.box(
         rx.vstack(
-            rx.hstack(rx.text("Package templates", size="3", weight="bold", color=BRAND_DARK), rx.spacer(), rx.button("New Template", on_click=LeaseDocumentState.new_lease_template, size="1", variant="soft", color_scheme="blue"), width="100%", align="center"),
-            rx.cond(LeaseDocumentState.lease_templates.length() > 0, rx.table.root(rx.table.header(rx.table.row(rx.table.column_header_cell("Name"), rx.table.column_header_cell("Property"), rx.table.column_header_cell("Sections"), rx.table.column_header_cell("Active"), rx.table.column_header_cell(""))), rx.table.body(rx.foreach(LeaseDocumentState.lease_templates, lease_template_row)), width="100%"), rx.text("No package templates yet.", size="2", color="#888")),
+            rx.hstack(rx.text("Package templates", size="3", weight="bold", color=BRAND_DARK), rx.spacer(), rx.button("+ New Template", on_click=LeaseDocumentState.new_lease_template, size="1", variant="outline", color_scheme="blue"), width="100%", align="center"),
+            rx.cond(LeaseDocumentState.lease_templates.length() > 0, rx.table.root(rx.table.header(rx.table.row(rx.table.column_header_cell("Name"), rx.table.column_header_cell("Property"), rx.table.column_header_cell("Sections"))), rx.table.body(rx.foreach(LeaseDocumentState.lease_templates, lease_template_row)), width="100%"), rx.text("No package templates yet.", size="2", color="#888")),
             spacing="3", width="100%", align_items="start",
         ),
         id="lease-doc-template-left-panel",
@@ -3956,8 +4153,16 @@ def _tab_templates() -> rx.Component:
     )
     right_panel = rx.box(
         rx.vstack(
-            rx.card(rx.vstack(rx.text(rx.cond(LeaseDocumentState.selected_template_id > 0, "Edit package template", "New package template"), size="3", weight="bold", color=BRAND_DARK), rx.grid(rx.vstack(rx.text("Template name", size="1", color="#666"), rx.input(value=LeaseDocumentState.lt_template_name, on_change=LeaseDocumentState.set_lt_template_name, placeholder="Broadway Modified-Gross", width="100%"), spacing="1", width="100%"), rx.vstack(rx.text("Property", size="1", color="#666"), rx.select(LeaseDocumentState.property_names, value=LeaseDocumentState.lt_property, on_change=LeaseDocumentState.set_lt_property, width="100%"), spacing="1", width="100%"), columns="2", spacing="3", width="100%"), rx.vstack(rx.text("Description", size="1", color="#666"), rx.text_area(value=LeaseDocumentState.lt_description, on_change=LeaseDocumentState.set_lt_description, width="100%", height="60px"), spacing="1", width="100%"), rx.checkbox("Active", checked=LeaseDocumentState.lt_is_active, on_change=LeaseDocumentState.set_lt_is_active), rx.hstack(rx.button(rx.cond(LeaseDocumentState.selected_template_id > 0, "Save Template", "Create Template"), on_click=LeaseDocumentState.save_lease_template, color_scheme="blue"), rx.button("Clear", on_click=LeaseDocumentState.new_lease_template, variant="soft", color_scheme="gray"), spacing="3"), spacing="3", width="100%", align_items="start"), width="100%"),
-            rx.card(rx.vstack(rx.hstack(rx.text("Section slots", size="3", weight="bold", color=BRAND_DARK), rx.spacer(), rx.button("New Section Slot", on_click=LeaseDocumentState.reset_template_section_form, size="1", variant="soft", color_scheme="blue"), width="100%", align="center"), rx.vstack(rx.text("Active package template for slots", size="1", color="#666"), rx.cond(LeaseDocumentState.lease_template_labels.length() > 0, rx.select(LeaseDocumentState.lease_template_labels, value=LeaseDocumentState.active_template_select_value, on_change=LeaseDocumentState.set_selected_template_label, width="100%"), rx.text("Create or select a package template before adding slots.", size="2", color="#888")), spacing="1", width="100%"), rx.cond(LeaseDocumentState.selected_section_id > 0, rx.callout.root(rx.hstack(rx.text("Editing slot ID", size="2"), rx.badge(LeaseDocumentState.selected_section_id.to_string(), color_scheme="amber", variant="soft"), spacing="2", align="center"), color_scheme="amber", width="100%")), rx.grid(rx.vstack(rx.text("Section label", size="1", color="#666"), rx.input(value=LeaseDocumentState.sec_label, on_change=LeaseDocumentState.set_sec_label, placeholder="Article 3 - Rent", width="100%"), spacing="1", width="100%"), rx.vstack(rx.text("Sort order", size="1", color="#666"), rx.input(value=LeaseDocumentState.sec_sort_order, on_change=LeaseDocumentState.set_sec_sort_order, width="100%"), spacing="1", width="100%"), rx.vstack(rx.text("Section type", size="1", color="#666"), rx.select(SECTION_TYPES, value=LeaseDocumentState.sec_section_type, on_change=LeaseDocumentState.set_sec_section_type, width="100%"), spacing="1", width="100%"), columns="3", spacing="3", width="100%"), rx.vstack(rx.text("Default section", size="1", color="#666"), rx.select(LeaseDocumentState.reusable_section_labels, value=LeaseDocumentState.sec_default_section_label, on_change=LeaseDocumentState.set_sec_default_section_label, width="100%"), rx.text("Reusable, active sections only.", size="1", color="#777"), spacing="1", width="100%"), rx.vstack(rx.text("Inclusion", size="1", color="#666"), rx.select(INCLUSION_MODES, value=LeaseDocumentState.sec_inclusion_mode, on_change=LeaseDocumentState.set_sec_inclusion_mode, width="100%"), rx.text("Required means always included. Optional means user may remove. Inactive means hidden from builder.", size="1", color="#777"), spacing="1", width="100%"), rx.hstack(rx.button(rx.cond(LeaseDocumentState.selected_section_id > 0, "Save Slot", "Add Slot"), on_click=LeaseDocumentState.save_template_section, color_scheme="blue"), rx.button("Cancel", on_click=LeaseDocumentState.reset_template_section_form, variant="soft", color_scheme="gray"), spacing="3"), rx.divider(), rx.cond(LeaseDocumentState.lease_template_sections.length() > 0, rx.table.root(rx.table.header(rx.table.row(rx.table.column_header_cell(""), rx.table.column_header_cell("Sort"), rx.table.column_header_cell("Label"), rx.table.column_header_cell("Type"), rx.table.column_header_cell("Default section"), rx.table.column_header_cell("Inclusion"), rx.table.column_header_cell("Actions"))), rx.table.body(rx.foreach(LeaseDocumentState.lease_template_sections, lease_template_section_row)), width="100%"), rx.text("No section slots yet. Add one above.", size="2", color="#888")), spacing="3", width="100%", align_items="start"), width="100%"),
+            rx.cond(
+                LeaseDocumentState.selected_template_id > 0,
+                rx.vstack(lease_template_header_card(), rx.cond(LeaseDocumentState.lt_edit_mode, lease_template_edit_form()), spacing="2", width="100%", align_items="stretch"),
+                rx.cond(
+                    LeaseDocumentState.lt_edit_mode,
+                    lease_template_edit_form(),
+                    rx.box(rx.text("Select a package template from the list, or click New Template.", size="2", color="#888"), style={"padding": "24px"}),
+                ),
+            ),
+            rx.cond(LeaseDocumentState.selected_template_id > 0, rx.card(rx.vstack(rx.hstack(rx.text("Section slots", size="3", weight="bold", color=BRAND_DARK), rx.spacer(), rx.button("+ New Slot", on_click=LeaseDocumentState.reset_template_section_form, size="1", variant="outline", color_scheme="blue"), width="100%", align="center"), rx.vstack(rx.text("Active package template for slots", size="1", color="#666"), rx.cond(LeaseDocumentState.lease_template_labels.length() > 0, rx.select(LeaseDocumentState.lease_template_labels, value=LeaseDocumentState.active_template_select_value, on_change=LeaseDocumentState.set_selected_template_label, width="100%"), rx.text("Create or select a package template before adding slots.", size="2", color="#888")), spacing="1", width="100%"), rx.cond(LeaseDocumentState.selected_section_id > 0, rx.callout.root(rx.hstack(rx.text("Editing slot ID", size="2"), rx.badge(LeaseDocumentState.selected_section_id.to_string(), color_scheme="amber", variant="soft"), spacing="2", align="center"), color_scheme="amber", width="100%")), rx.grid(rx.vstack(rx.text("Section label", size="1", color="#666"), rx.input(value=LeaseDocumentState.sec_label, on_change=LeaseDocumentState.set_sec_label, placeholder="Article 3 - Rent", width="100%"), spacing="1", width="100%"), rx.vstack(rx.text("Sort order", size="1", color="#666"), rx.input(value=LeaseDocumentState.sec_sort_order, on_change=LeaseDocumentState.set_sec_sort_order, width="100%"), spacing="1", width="100%"), rx.vstack(rx.text("Section type", size="1", color="#666"), rx.select(SECTION_TYPES, value=LeaseDocumentState.sec_section_type, on_change=LeaseDocumentState.set_sec_section_type, width="100%"), spacing="1", width="100%"), columns="3", spacing="3", width="100%"), rx.vstack(rx.text("Default section", size="1", color="#666"), rx.select(LeaseDocumentState.reusable_section_labels, value=LeaseDocumentState.sec_default_section_label, on_change=LeaseDocumentState.set_sec_default_section_label, width="100%"), rx.text("Reusable, active sections only.", size="1", color="#777"), spacing="1", width="100%"), rx.vstack(rx.text("Inclusion", size="1", color="#666"), rx.select(INCLUSION_MODES, value=LeaseDocumentState.sec_inclusion_mode, on_change=LeaseDocumentState.set_sec_inclusion_mode, width="100%"), rx.text("Required means always included. Optional means user may remove. Inactive means hidden from builder.", size="1", color="#777"), spacing="1", width="100%"), rx.hstack(rx.button(rx.cond(LeaseDocumentState.selected_section_id > 0, "Save Slot", "Add Slot"), on_click=LeaseDocumentState.save_template_section, color_scheme="blue"), rx.button("Cancel", on_click=LeaseDocumentState.reset_template_section_form, variant="soft", color_scheme="gray"), spacing="3"), rx.divider(), rx.cond(LeaseDocumentState.lease_template_sections.length() > 0, rx.table.root(rx.table.header(rx.table.row(rx.table.column_header_cell(""), rx.table.column_header_cell("Sort"), rx.table.column_header_cell("Label"), rx.table.column_header_cell("Type"), rx.table.column_header_cell("Default section"), rx.table.column_header_cell("Inclusion"), rx.table.column_header_cell("Actions"))), rx.table.body(rx.foreach(LeaseDocumentState.lease_template_sections, lease_template_section_row)), width="100%"), rx.text("No section slots yet. Add one above.", size="2", color="#888")), spacing="3", width="100%", align_items="start"), width="100%")),
             spacing="4", width="100%",
         ), style={"flex": "1", "min_width": "0"},
     )
