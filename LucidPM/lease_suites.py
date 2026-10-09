@@ -89,12 +89,25 @@ def _to_date(value) -> datetime.date | None:
 
 
 def effective_end(lease: dict) -> datetime.date | None:
+    """LeaseEnd, cut short by LeaseTerminationDate when one is set.
+
+    The termination date wins regardless of LeaseStatus: a scheduled early
+    termination is entered while the lease is still "Active", and forward-looking
+    reports (Proforma, Rent Roll as of a future date) must already honor it.
+    """
     end = _to_date(lease.get("LeaseEnd"))
-    if str(lease.get("LeaseStatus") or "").strip() == "Terminated":
-        terminated = _to_date(lease.get("LeaseTerminationDate"))
-        if terminated is not None:
-            end = terminated if end is None else min(end, terminated)
+    terminated = _to_date(lease.get("LeaseTerminationDate"))
+    if terminated is not None:
+        end = terminated if end is None else min(end, terminated)
     return end
+
+
+def is_terminated(lease: dict) -> bool:
+    """True when the lease has a termination date or a Terminated status (never a holdover)."""
+    return (
+        _to_date(lease.get("LeaseTerminationDate")) is not None
+        or str(lease.get("LeaseStatus") or "").strip() == "Terminated"
+    )
 
 
 def join_labels(labels: list[str], conjunction: str = "and") -> str:
@@ -230,7 +243,7 @@ def build_rent_roll(as_of: datetime.date, prop_filter: str, basis: str, db: str)
         if start <= as_of and (end is None or end >= as_of):
             active_leases.append(lease)
         elif (
-            str(lease.get("LeaseStatus") or "").strip() != "Terminated"
+            not is_terminated(lease)
             and tenant_status == "active"
             and end is not None and end < as_of
             and str(lease.get("TenantSuite") or "").strip()

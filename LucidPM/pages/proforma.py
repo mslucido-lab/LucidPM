@@ -176,14 +176,10 @@ class ProformaState(AppState):
             return None
 
         lease_start = to_date(lease.get("LeaseStart"))
-        lease_end   = to_date(lease.get("LeaseEnd")) or datetime.date(9999, 12, 31)
-
-        # A terminated lease still contributes rent through the actual termination date.
-        # LeaseStatus alone is not enough for proforma math because it has no timing.
-        status = str(lease.get("LeaseStatus") or "").strip()
-        termination_date = to_date(lease.get("LeaseTerminationDate"))
-        if status == "Terminated" and termination_date is not None:
-            lease_end = min(lease_end, termination_date)
+        # A lease contributes rent through its termination date when one is set,
+        # whatever its LeaseStatus: a scheduled early termination is entered while
+        # the lease is still Active, and the proforma is forward-looking.
+        lease_end   = effective_end(lease) or datetime.date(9999, 12, 31)
 
         try:
             base_rent = float(lease.get("RentAmount") or 0)
@@ -232,7 +228,14 @@ class ProformaState(AppState):
                     rent_amt = float(row.get("RentAmount") or 0)
                 except (TypeError, ValueError):
                     rent_amt = 0.0
-                segments.append({"start": seg_start, "end": seg_end, "rent": rent_amt})
+                # A row that starts and ends inside one month (e.g. 2/6-2/28 $625) holds
+                # the amount actually charged for that stub, not a monthly rate.
+                fixed = (
+                    explicit_end is not None
+                    and (eff.year, eff.month) == (explicit_end.year, explicit_end.month)
+                    and seg_start == eff and seg_end == explicit_end
+                )
+                segments.append({"start": seg_start, "end": seg_end, "rent": rent_amt, "fixed": fixed})
 
         segments = [s for s in segments if s["start"] <= s["end"]]
         if not segments:
@@ -251,6 +254,10 @@ class ProformaState(AppState):
 
         for seg in valid:
             rent = float(seg["rent"])
+
+            # Fixed stub amount for a partial month: use as-is, never prorate again.
+            if seg.get("fixed") and seg["start"] <= month_end and seg["end"] >= month_start:
+                return round(rent, 2)
 
             # Segment is already active on the 1st of the month.
             if seg["start"] <= month_start <= seg["end"]:
@@ -519,7 +526,7 @@ class ProformaState(AppState):
                     in_known_gap = False
                     for prior_lease in suite_leases:
                         prior_start = to_date(prior_lease.get("LeaseStart"))
-                        prior_end = to_date(prior_lease.get("LeaseTerminationDate")) if str(prior_lease.get("LeaseStatus") or "").strip() == "Terminated" else to_date(prior_lease.get("LeaseEnd"))
+                        prior_end = effective_end(prior_lease)
                         if prior_start is None or prior_end is None or prior_end >= month_start:
                             continue
                         for future_lease in suite_leases:
@@ -537,7 +544,7 @@ class ProformaState(AppState):
                             # including a terminated lease with a LeaseTerminationDate.
                             allow = True
                             for l in suite_leases:
-                                le = to_date(l.get("LeaseTerminationDate")) if str(l.get("LeaseStatus") or "").strip() == "Terminated" else to_date(l.get("LeaseEnd"))
+                                le = effective_end(l)
                                 if le and le.year == year and le.month == month_num and le.day > 1:
                                     allow = False
                                     break

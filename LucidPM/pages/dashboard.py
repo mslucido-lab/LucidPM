@@ -127,7 +127,8 @@ class DashboardState(AppState):
             "LEFT JOIN LeaseTermTypes ltt ON l.LeaseTermTypeID = ltt.LeaseTermTypeID "
             f"WHERE (l.LeaseStart <= ? AND (l.LeaseEnd IS NULL OR l.LeaseEnd >= ?)) "
             f"AND ISNULL(ts.TenantStatusName, '') != 'Default' "
-            f"AND NOT (l.LeaseStatus = 'Terminated' AND l.LeaseTerminationDate IS NOT NULL AND l.LeaseTerminationDate < ?) "
+            # A termination date ends the lease whatever its status (scheduled early terminations stay "Active").
+            f"AND NOT (l.LeaseTerminationDate IS NOT NULL AND l.LeaseTerminationDate < ?) "
             f"{prop_clause} ORDER BY l.LeaseStart DESC, l.LeaseID DESC",
             tuple([today, today, today] + prop_params), db=self.db,
         )
@@ -146,7 +147,7 @@ class DashboardState(AppState):
             f"WHERE l.LeaseEnd < ? AND l.LeaseEnd IS NOT NULL "
             f"AND ts.TenantStatusName = 'Active' "
             f"AND ISNULL(t.Suite, '') != '' "
-            f"AND ISNULL(l.LeaseStatus, '') <> 'Terminated' {prop_clause} "
+            f"AND ISNULL(l.LeaseStatus, '') <> 'Terminated' AND l.LeaseTerminationDate IS NULL {prop_clause} "
             f"ORDER BY l.LeaseStart DESC, l.LeaseID DESC",
             tuple([today] + prop_params), db=self.db,
         )
