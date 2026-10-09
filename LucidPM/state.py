@@ -240,8 +240,20 @@ def api_base_url() -> str:
       * unset            -> "http://localhost:8000" (local behaviour unchanged)
       * --backend-port N  -> "http://localhost:N" (Reflex rewrites api_url)
       * deployed          -> whatever REFLEX_API_URL / rxconfig.py sets
+      * container (LUCIDPM_ENV=cloud) built with a localhost REFLEX_API_URL
+                          -> "" so links are relative (/api/...)
+
+    In the container, Caddy serves /api/* on the page's own address, and Reflex's
+    browser code treats a localhost api_url as "use the page's address" for the
+    WebSocket. Relative links match that, so the app works on any hostname
+    (custom domain or *.azurecontainerapps.io).
     """
-    return rx.config.get_config().api_url.rstrip("/")
+    url = rx.config.get_config().api_url.rstrip("/")
+    if os.getenv("LUCIDPM_ENV", "").strip().lower() == "cloud":
+        host = url.split("://", 1)[-1].split("/", 1)[0].rsplit(":", 1)[0].strip("[]").lower()
+        if host in {"localhost", "127.0.0.1", "0.0.0.0", "::"}:
+            return ""
+    return url
 
 
 def run_query(sql: str, params: tuple = (), db: str = TEST_DB_NAME) -> list[dict]:

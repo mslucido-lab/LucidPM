@@ -6,7 +6,7 @@
 
 LucidPM runs as the `lucidpm` Azure Container App in `lucido-apps-env` (West US 3, resource group `Lucido-Apps-RG`), using private image `ghcr.io/mslucido-lab/lucidpm:0.4.3` (revision `lucidpm--0000009`). The image uses ODBC Driver 18 and Caddy serves the compiled frontend on port 8080 while proxying Reflex's backend, WebSocket, health, upload, and `/api/*` routes to loopback-only port 8000.
 
-- **URL:** `https://lucidpm.lucidoproperties.net` (custom domain, Azure-managed cert; Cycle 5.4). The original `lucidpm.icyocean-a1d9520f.westus3.azurecontainerapps.io` address still works.
+- **URL:** `https://lucidpm.lucidoproperties.net` (custom domain, Azure-managed cert; Cycle 5.4). The original `lucidpm.icyocean-a1d9520f.westus3.azurecontainerapps.io` address also works fully from `0.4.4` on (use it where the custom domain is blocked).
 - **Access:** Microsoft Entra ID built-in auth, single-tenant `lucidpm` app registration with assignment required (Handoff 72). The old IP allowlist was removed; Entra is the only perimeter.
 - **Database:** Azure SQL `lucidpm-sql-24899` — `TenantCRM` (Prod) and `TenantCRM_Test`. The Test/Prod toggle is enabled. **Azure SQL is the only database**; the local SQL Server copies are retired (confirmed 2026-10-05).
 - **Storage:** generated packages and source/section PDFs live in Azure Blob Storage (H67–H69, H71).
@@ -25,10 +25,9 @@ Running the app locally (`reflex run`, configured by the ignored `.env`) connect
 Releases are manual — there is no CI. From the repo root in PowerShell, with Docker Desktop running and the release commit checked out on a **clean working tree** (the build copies the working directory, so uncommitted files would ship):
 
 ```powershell
-# 1. Build. REFLEX_API_URL is baked into the frontend bundle at build time — it is NOT
-#    read from the Container App's env vars. Omitting it breaks PDF/download links (H71).
-docker build --build-arg REFLEX_API_URL=https://lucidpm.lucidoproperties.net `
-  -t ghcr.io/mslucido-lab/lucidpm:<version> .
+# 1. Build. Do NOT pass --build-arg REFLEX_API_URL: the Dockerfile default
+#    (http://localhost:8080) makes the app work on whatever address it is opened from.
+docker build -t ghcr.io/mslucido-lab/lucidpm:<version> .
 
 # 2. Push (docker login ghcr.io first if needed, with a token that has write:packages).
 docker push ghcr.io/mslucido-lab/lucidpm:<version>
@@ -41,11 +40,13 @@ az containerapp update -n lucidpm -g Lucido-Apps-RG --image ghcr.io/mslucido-lab
 az containerapp revision list -n lucidpm -g Lucido-Apps-RG -o table
 ```
 
-Then on `https://lucidpm.lucidoproperties.net`: sign in, open a Rent Roll PDF, download a lease package (the links that break if `REFLEX_API_URL` is wrong), and spot-check the changed feature on Test, then Prod.
+Then on **both** `https://lucidpm.lucidoproperties.net` and the `*.azurecontainerapps.io` address: sign in, confirm the page connects (no WebSocket error), open a Rent Roll PDF, download a lease package (the links that break if `REFLEX_API_URL` / `api_base_url()` is wrong), and spot-check the changed feature on Test, then Prod.
 
 **Rollback:** re-run step 3 with the previous tag. Before releasing, note the current tag from `az containerapp show -n lucidpm -g Lucido-Apps-RG --query "properties.template.containers[0].image"`.
 
-Up to `0.4.2`, images were built with `REFLEX_API_URL` set to the `*.azurecontainerapps.io` address. Building with the custom domain makes browser API calls same-origin (the Cycle 5.4 optional follow-up).
+**Why no `REFLEX_API_URL` build-arg (from `0.4.4`).** `REFLEX_API_URL` is baked into the browser bundle at build time. When it names a real host, the browser always connects to that host, so the app only works on that one address: opening the other address fails with a WebSocket error, because the Entra sign-in cookie belongs to the address you signed in on. A network that blocks the custom domain (Mark's work network does) then can't use the app at all. With the default `localhost` value, Reflex's browser code uses the page's own address for the WebSocket, and `state.api_base_url()` returns `""` inside the container (`LUCIDPM_ENV=cloud`), so PDF/download links are relative (`/api/...`) and Caddy serves them on that same address. Result: `https://lucidpm.lucidoproperties.net` and `https://lucidpm.icyocean-a1d9520f.westus3.azurecontainerapps.io` both work fully.
+
+History: up to `0.4.2`, images were built with `REFLEX_API_URL` set to the `*.azurecontainerapps.io` address; `0.4.3` used the custom domain. Both locked the app to one address.
 
 ## Running the image locally
 
