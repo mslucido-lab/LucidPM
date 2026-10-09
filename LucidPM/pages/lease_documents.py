@@ -1578,6 +1578,84 @@ class LeaseDocumentState(AppState):
         self.edit_section(section_id)
         self.library_detail_mode = "view"
 
+    def copy_library_section(self):
+        """Copy the selected text section as "Copy of <name>" and open the copy for editing.
+
+        Text sections only: a PDF-split section owns its split file, and delete_section
+        removes that file, so two sections sharing it would break when either is deleted.
+        """
+        self.form_error = ""
+        self.form_success = ""
+        sid = int(self.editing_section_id or 0)
+        if sid <= 0:
+            self.form_error = "Select a section to copy."
+            return
+        rows = run_query(
+            "SELECT s.SectionName, s.LeaseSourceDocumentID, s.Content, s.StoredFilePath, "
+            "ISNULL(sd.StoredFilePath, '') AS SourcePath "
+            "FROM LeaseDocumentSections s "
+            "LEFT JOIN LeaseSourceDocuments sd ON s.LeaseSourceDocumentID = sd.LeaseSourceDocumentID "
+            "WHERE s.LeaseDocumentSectionID = ?",
+            (sid,), db=self.db,
+        )
+        if not rows:
+            self.form_error = "Section not found."
+            return
+        r = rows[0]
+        stored_path = str(r.get("StoredFilePath") or "").strip()
+        has_content = bool(str(r.get("Content") or "").strip())
+        if stored_path and not has_content and stored_path != str(r.get("SourcePath") or "").strip():
+            self.form_error = "PDF sections can't be copied yet - only text sections. (Copying a PDF section needs the Replace PDF work in Handoff 56.)"
+            return
+
+        existing = {
+            str(x.get("SectionName") or "").strip().lower()
+            for x in run_query("SELECT SectionName FROM LeaseDocumentSections", db=self.db)
+        }
+        base = f"Copy of {str(r.get('SectionName') or '').strip()}"[:240]
+        new_name = base
+        n = 2
+        while new_name.lower() in existing:
+            new_name = f"{base} ({n})"
+            n += 1
+
+        source_id = r.get("LeaseSourceDocumentID")
+        sort_rows = run_query(
+            "SELECT ISNULL(MAX(SortOrder), 0) AS MaxSort FROM LeaseDocumentSections "
+            "WHERE ISNULL(LeaseSourceDocumentID, 0) = ?",
+            (int(source_id or 0),), db=self.db,
+        )
+        sort_order = int(sort_rows[0].get("MaxSort") or 0) + 10 if sort_rows else 10
+
+        try:
+            # Exhibit code is left blank: it must be unique per source document.
+            run_exec(
+                "INSERT INTO LeaseDocumentSections "
+                "(LeaseSourceDocumentID, LeaseID, SectionType, SectionName, ExhibitCode, StartPage, EndPage, "
+                "StoredFilePath, StorageRoot, RelativePath, SortOrder, IsReusable, IsActive, Content, Notes, "
+                "ClauseTag, ArticleNumber, DisplayLabel, UpdatedOn) "
+                "SELECT LeaseSourceDocumentID, LeaseID, SectionType, ?, NULL, StartPage, EndPage, "
+                "StoredFilePath, StorageRoot, RelativePath, ?, IsReusable, IsActive, Content, Notes, "
+                "ClauseTag, ArticleNumber, DisplayLabel, SYSDATETIME() "
+                "FROM LeaseDocumentSections WHERE LeaseDocumentSectionID = ?",
+                (new_name, sort_order, sid), db=self.db,
+            )
+            id_rows = run_query(
+                "SELECT TOP 1 LeaseDocumentSectionID FROM LeaseDocumentSections ORDER BY LeaseDocumentSectionID DESC",
+                db=self.db,
+            )
+            new_id = int(id_rows[0].get("LeaseDocumentSectionID") or 0) if id_rows else 0
+        except Exception as ex:
+            self.form_error = f"Could not copy section: {ex}"
+            return
+        self._load_sections()
+        self._load_all_sections()
+        self._load_reusable_section_options()
+        if new_id > 0:
+            self.select_library_section(new_id)
+            self.library_detail_mode = "edit"
+        self.form_success = f"Created '{new_name}'. Rename it, make your changes, and click Save Section."
+
     def open_section_in_library(self, section_id: int):
         """Open a section from another tab in the Section Library."""
         self.select_library_section(section_id)
@@ -4083,7 +4161,17 @@ def _tab_library() -> rx.Component:
     left_panel = rx.box(
         rx.vstack(
             rx.hstack(rx.text("Section Library", size="3", weight="bold", color=BRAND_DARK), rx.spacer(), rx.badge(LeaseDocumentState.library_result_count, color_scheme="blue", variant="soft"), width="100%", align="center"),
-            rx.button("+ New Section", on_click=LeaseDocumentState.start_new_section("text"), size="1", variant="outline", color_scheme="blue", width="100%"),
+            rx.hstack(
+                rx.button("+ New Section", on_click=LeaseDocumentState.start_new_section("text"), size="1", variant="outline", color_scheme="blue"),
+                rx.button(
+                    rx.icon("copy", size=14), "Copy Section",
+                    on_click=LeaseDocumentState.copy_library_section,
+                    size="1", variant="outline", color_scheme="blue",
+                    disabled=(LeaseDocumentState.editing_section_id <= 0) | (LeaseDocumentState.library_create_mode != ""),
+                    title="Copy the selected section as \"Copy of ...\"",
+                ),
+                spacing="2",
+            ),
             rx.input(value=LeaseDocumentState.library_search, on_change=LeaseDocumentState.set_library_search, placeholder="Search name, label, tag, source, content", width="100%"),
             rx.grid(
                 rx.vstack(rx.text("Type", size="1", color="#666"), rx.select(["All"] + SECTION_TYPES, value=LeaseDocumentState.library_type_filter, on_change=LeaseDocumentState.set_library_type_filter, width="100%"), spacing="1"),
