@@ -4,7 +4,7 @@
 
 *(Verified 2026-10-09 via `az containerapp show`.)*
 
-LucidPM runs as the `lucidpm` Azure Container App in `lucido-apps-env` (West US 3, resource group `Lucido-Apps-RG`), using private image `ghcr.io/mslucido-lab/lucidpm:0.5.1` (revision `lucidpm--0000011`). The image uses ODBC Driver 18 and Caddy serves the compiled frontend on port 8080 while proxying Reflex's backend, WebSocket, health, upload, and `/api/*` routes to loopback-only port 8000.
+LucidPM runs as the `lucidpm` Azure Container App in `lucido-apps-env` (West US 3, resource group `Lucido-Apps-RG`), using private image `ghcr.io/mslucido-lab/lucidpm:0.5.2` (revision `lucidpm--0000012`). The image uses ODBC Driver 18 and Caddy serves the compiled frontend on port 8080 while proxying Reflex's backend, WebSocket, health, upload, and `/api/*` routes to loopback-only port 8000.
 
 - **URL:** `https://lucidpm.lucidoproperties.net` (custom domain, Azure-managed cert; Cycle 5.4). The original `lucidpm.icyocean-a1d9520f.westus3.azurecontainerapps.io` address also works fully from `0.4.4` on (use it where the custom domain is blocked).
 - **Access:** Microsoft Entra ID built-in auth, single-tenant `lucidpm` app registration with assignment required (Handoff 72). The old IP allowlist was removed; Entra is the only perimeter.
