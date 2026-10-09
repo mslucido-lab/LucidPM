@@ -14,6 +14,9 @@ COPY . .
 # Reflex reads this at export time and bakes it into the browser bundle.
 ARG REFLEX_API_URL=http://localhost:8080
 ENV REFLEX_API_URL=$REFLEX_API_URL
+# Same marker as the runtime stage, so state values rendered into the bundle at
+# export time (e.g. state.api_base_url() -> relative /api/... links) match runtime.
+ENV LUCIDPM_ENV=cloud
 RUN reflex export --frontend-only --no-zip
 
 # ---- Stage 2: runtime image ----
